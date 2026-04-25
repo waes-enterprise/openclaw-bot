@@ -20,12 +20,73 @@ You know Zambian artists, slang, culture, music genres (Afrobeat, ZedMusic, Kali
 You create: viral captions, blog posts, video scripts, content calendars, trending headlines.
 Your content always feels authentic, local, and engaging to young Zambians."""
 
-AGENT_SYSTEM = """You are OpenClaw, the most advanced AI agent in Zambia.
-You are simultaneously: a senior developer, elite content creator, business strategist, and entertainment expert.
-You are building ZamVibe into Zambia's biggest digital media brand.
-Be decisive, confident, and always give actionable answers."""
+CEO_SYSTEM = """You are OpenClaw CEO, a world-class Chief Executive Officer with 20+ years leading 
+billion-dollar media and tech companies across Africa and globally.
+You think strategically, make bold decisions, and inspire teams.
+You understand: vision setting, company culture, board relations, investor relations, 
+market expansion, partnerships, crisis management, and scaling businesses.
+You are building ZamVibe into Africa's biggest entertainment brand.
+Give decisive, confident, executive-level guidance."""
 
-def ask_groq(prompt, image_base64=None, system=AGENT_SYSTEM, max_tokens=1000):
+CCO_SYSTEM = """You are OpenClaw CCO, an elite Chief Content Officer with 20+ years in global media.
+You have launched content brands across Africa, Europe and USA.
+You understand: content strategy, brand voice, audience development, monetization, 
+editorial standards, influencer partnerships, and viral distribution.
+You think in audiences, not just content. You build loyal communities.
+Your job is to make ZamVibe the most trusted entertainment voice in Zambia."""
+
+CFO_SYSTEM = """You are OpenClaw CFO, a world-class Chief Financial Officer with 20+ years in media and tech.
+You specialize in: financial modeling, revenue streams, cost optimization, fundraising, 
+investor pitches, cash flow management, African market economics, and startup finance.
+You think in numbers, margins, and sustainable growth.
+Help ZamVibe become financially strong and investor-ready."""
+
+CMO_SYSTEM = """You are OpenClaw CMO, a legendary Chief Marketing Officer who has grown 
+brands to millions of users across Africa.
+You specialize in: growth hacking, brand positioning, paid ads, influencer marketing, 
+community building, PR, viral campaigns, and African market penetration.
+You know how to acquire users for almost nothing and retain them forever.
+Make ZamVibe the most recognized entertainment brand in Zambia."""
+
+CTO_SYSTEM = """You are OpenClaw CTO, a visionary Chief Technology Officer with 20+ years 
+building scalable platforms used by millions.
+You specialize in: system architecture, AI integration, cloud infrastructure, 
+cybersecurity, mobile apps, API design, and tech team management.
+You build technology that scales from 100 to 100 million users.
+Make ZamVibe's tech stack world-class and future-proof."""
+
+COO_SYSTEM = """You are OpenClaw COO, an expert Chief Operating Officer with 20+ years 
+running operations for fast-growing media companies.
+You specialize in: process optimization, team building, OKRs, project management, 
+vendor relations, legal compliance, HR, and operational efficiency.
+You turn chaotic startups into well-oiled machines.
+Make ZamVibe run like a professional organization."""
+
+LEGAL_SYSTEM = """You are OpenClaw Legal, a senior media and tech lawyer with 20+ years experience.
+You specialize in: intellectual property, content licensing, data privacy (GDPR/POPIA), 
+startup law, contracts, advertising law, and African media regulations.
+Give clear, practical legal guidance for ZamVibe's operations.
+Always note when professional legal counsel is needed."""
+
+HR_SYSTEM = """You are OpenClaw HR, a world-class Chief People Officer with 20+ years 
+building high-performance teams at media and tech companies.
+You specialize in: talent acquisition, team culture, performance management, 
+remote work, compensation, onboarding, and employee retention.
+Help ZamVibe build a team that wins."""
+
+SALES_SYSTEM = """You are OpenClaw Sales, an elite Chief Revenue Officer with 20+ years 
+closing deals and building revenue engines for media companies.
+You specialize in: advertising sales, sponsorships, brand partnerships, 
+B2B sales, pricing strategy, and revenue diversification.
+Help ZamVibe generate serious revenue from day one."""
+
+AGENT_SYSTEM = """You are OpenClaw, the most advanced AI agent in Zambia — simultaneously a 
+world-class CEO, CCO, CFO, CMO, CTO, COO, senior developer, and elite content creator.
+You are building ZamVibe into Zambia's biggest digital media empire.
+Be decisive, confident, strategic, and always give actionable, expert-level answers.
+You think like a billion-dollar company but execute like a lean startup."""
+
+def ask_groq(prompt, image_base64=None, system=AGENT_SYSTEM, max_tokens=1500):
     key = os.environ.get("GROQ_API_KEY", "")
     if image_base64:
         messages = [{"role": "user", "content": [
@@ -45,7 +106,6 @@ def ask_groq(prompt, image_base64=None, system=AGENT_SYSTEM, max_tokens=1000):
     return f"Error: {r.text}"
 
 def send_telegram(token, chat_id, text):
-    # Split long messages
     if len(text) > 4000:
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
         for chunk in chunks:
@@ -75,26 +135,208 @@ def handle_command(token, chat_id, text):
 
     if cmd in ["/help", "/start"]:
         reply = (
-            "<b>OpenClaw — Senior Dev + Elite Creator</b>\n\n"
+            "<b>OpenClaw — Your AI Executive Team</b>\n\n"
+            "<b>C-Suite Commands:</b>\n"
+            "/ceo [question] - CEO strategy and vision\n"
+            "/cco [question] - Content and brand strategy\n"
+            "/cfo [question] - Finance and revenue\n"
+            "/cmo [question] - Marketing and growth\n"
+            "/cto [question] - Technology and architecture\n"
+            "/coo [question] - Operations and processes\n"
+            "/legal [question] - Legal guidance\n"
+            "/hr [question] - People and team building\n"
+            "/sales [question] - Revenue and partnerships\n\n"
+            "<b>Executive Reports:</b>\n"
+            "/boardreport - Full company status report\n"
+            "/pitch - Investor pitch for ZamVibe\n"
+            "/swot - SWOT analysis\n"
+            "/roadmap - 90-day product roadmap\n"
+            "/revenue - Revenue strategy\n\n"
             "<b>Developer Commands:</b>\n"
-            "/code [task] - Write production-ready code\n"
+            "/code [task] - Write production code\n"
             "/review [code] - Senior code review\n"
-            "/debug [problem] - Debug and fix issues\n"
-            "/architect [feature] - System design advice\n"
+            "/debug [problem] - Debug and fix\n"
+            "/architect [feature] - System design\n"
             "/build [feature] - Build ZamVibe feature\n\n"
             "<b>Content Commands:</b>\n"
-            "/trend - Latest Zambian entertainment trend\n"
-            "/caption [topic] - Viral social media captions\n"
-            "/blog [topic] - Full SEO blog post\n"
-            "/script [topic] - TikTok/YouTube video script\n"
-            "/headline [topic] - 10 viral headlines\n"
+            "/trend - Latest Zambian trend\n"
+            "/caption [topic] - Viral captions\n"
+            "/blog [topic] - Full blog post\n"
+            "/script [topic] - Video script\n"
+            "/headline [topic] - Viral headlines\n"
             "/calendar - 7-day content calendar\n"
-            "/strategy [goal] - Content strategy plan\n\n"
+            "/strategy [goal] - Content strategy\n\n"
             "<b>Smart Commands:</b>\n"
             "/analyze [anything] - Deep analysis\n"
-            "/idea - Random ZamVibe feature idea\n"
-            "/roast [topic] - Brutally honest review\n\n"
-            "Or just send any message or image!"
+            "/idea - ZamVibe feature idea\n"
+            "/roast [topic] - Honest critique\n"
+            "/brainstorm [topic] - Ideas session\n\n"
+            "Or send any message or image!"
+        )
+        send_telegram(token, chat_id, reply)
+
+    # ===== C-SUITE COMMANDS =====
+    elif cmd == "/ceo":
+        question = args or "What should be ZamVibe's top priority right now?"
+        send_telegram(token, chat_id, "Thinking like a CEO...")
+        reply = ask_groq(
+            f"As CEO of ZamVibe, answer this: {question}\n"
+            f"Give: executive decision, strategic rationale, key risks, and next steps.",
+            system=CEO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/cco":
+        question = args or "How should ZamVibe build its content brand?"
+        send_telegram(token, chat_id, "Thinking like a CCO...")
+        reply = ask_groq(
+            f"As CCO of ZamVibe, answer this: {question}\n"
+            f"Give: content vision, brand voice, audience strategy, and execution plan.",
+            system=CCO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/cfo":
+        question = args or "How should ZamVibe generate revenue?"
+        send_telegram(token, chat_id, "Thinking like a CFO...")
+        reply = ask_groq(
+            f"As CFO of ZamVibe, answer this: {question}\n"
+            f"Give: financial analysis, revenue model, cost structure, and projections.",
+            system=CFO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/cmo":
+        question = args or "How do we grow ZamVibe to 100k users?"
+        send_telegram(token, chat_id, "Thinking like a CMO...")
+        reply = ask_groq(
+            f"As CMO of ZamVibe, answer this: {question}\n"
+            f"Give: marketing strategy, channels, campaigns, budget allocation, and KPIs.",
+            system=CMO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/cto":
+        question = args or "What is ZamVibe's ideal tech stack?"
+        send_telegram(token, chat_id, "Thinking like a CTO...")
+        reply = ask_groq(
+            f"As CTO of ZamVibe, answer this: {question}\n"
+            f"Give: technical recommendation, architecture decision, trade-offs, and implementation plan.",
+            system=CTO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/coo":
+        question = args or "How should ZamVibe structure its operations?"
+        send_telegram(token, chat_id, "Thinking like a COO...")
+        reply = ask_groq(
+            f"As COO of ZamVibe, answer this: {question}\n"
+            f"Give: operational framework, processes, team structure, and efficiency metrics.",
+            system=COO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/legal":
+        question = args or "What legal considerations does ZamVibe need to know?"
+        send_telegram(token, chat_id, "Thinking like a lawyer...")
+        reply = ask_groq(
+            f"As legal counsel for ZamVibe, answer this: {question}\n"
+            f"Give: legal analysis, risks, compliance requirements, and recommendations.",
+            system=LEGAL_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/hr":
+        question = args or "How should ZamVibe build its first team?"
+        send_telegram(token, chat_id, "Thinking like a Chief People Officer...")
+        reply = ask_groq(
+            f"As Chief People Officer of ZamVibe, answer this: {question}\n"
+            f"Give: hiring plan, team structure, culture recommendations, and compensation guidance.",
+            system=HR_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/sales":
+        question = args or "How should ZamVibe approach its first advertisers?"
+        send_telegram(token, chat_id, "Thinking like a Chief Revenue Officer...")
+        reply = ask_groq(
+            f"As Chief Revenue Officer of ZamVibe, answer this: {question}\n"
+            f"Give: sales strategy, target clients, pitch approach, pricing, and revenue targets.",
+            system=SALES_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    # ===== EXECUTIVE REPORTS =====
+    elif cmd == "/boardreport":
+        send_telegram(token, chat_id, "Generating board report...")
+        reply = ask_groq(
+            "Generate a professional board report for ZamVibe covering:\n"
+            "1. Executive Summary\n"
+            "2. Product Status\n"
+            "3. Content Performance\n"
+            "4. Financial Overview\n"
+            "5. Marketing & Growth\n"
+            "6. Technology Updates\n"
+            "7. Key Risks\n"
+            "8. Next Quarter Priorities\n"
+            "Make it professional and data-driven.",
+            system=CEO_SYSTEM, max_tokens=2000
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/pitch":
+        send_telegram(token, chat_id, "Building investor pitch...")
+        reply = ask_groq(
+            "Write a compelling investor pitch for ZamVibe:\n"
+            "1. Problem we solve\n"
+            "2. Our solution\n"
+            "3. Market size (Zambia + Africa)\n"
+            "4. Business model\n"
+            "5. Traction so far\n"
+            "6. Team\n"
+            "7. Financial projections\n"
+            "8. The ask (funding needed)\n"
+            "Make it exciting and investor-ready.",
+            system=CFO_SYSTEM, max_tokens=2000
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/swot":
+        send_telegram(token, chat_id, "Running SWOT analysis...")
+        reply = ask_groq(
+            "Do a detailed SWOT analysis for ZamVibe:\n"
+            "Strengths, Weaknesses, Opportunities, Threats.\n"
+            "Be specific, honest, and strategic.\n"
+            "End with 3 key strategic recommendations.",
+            system=CEO_SYSTEM, max_tokens=1500
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/roadmap":
+        send_telegram(token, chat_id, "Building 90-day roadmap...")
+        reply = ask_groq(
+            "Create a detailed 90-day roadmap for ZamVibe:\n"
+            "Month 1: Foundation\n"
+            "Month 2: Growth\n"
+            "Month 3: Scale\n"
+            "For each month include: product milestones, content goals, "
+            "marketing targets, revenue goals, and team needs.",
+            system=CEO_SYSTEM, max_tokens=2000
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/revenue":
+        send_telegram(token, chat_id, "Building revenue strategy...")
+        reply = ask_groq(
+            "Create a comprehensive revenue strategy for ZamVibe:\n"
+            "1. Primary revenue streams\n"
+            "2. Advertising model\n"
+            "3. Sponsorship opportunities\n"
+            "4. Premium features\n"
+            "5. Partnership revenue\n"
+            "6. 12-month revenue projection\n"
+            "Be specific about Zambian market rates and opportunities.",
+            system=CFO_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -104,22 +346,18 @@ def handle_command(token, chat_id, text):
         send_telegram(token, chat_id, "Writing code...")
         reply = ask_groq(
             f"Write complete, production-ready code for: {task}\n"
-            f"Include: imports, full implementation, comments, and usage example.\n"
-            f"This is for ZamVibe - Zambia's entertainment platform.",
-            system=DEV_SYSTEM,
-            max_tokens=2000
+            f"Include: imports, full implementation, comments, and usage example.",
+            system=DEV_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/review":
         code = args or "No code provided"
-        send_telegram(token, chat_id, "Reviewing your code...")
+        send_telegram(token, chat_id, "Reviewing code...")
         reply = ask_groq(
-            f"Do a thorough senior code review of this code:\n\n{code}\n\n"
-            f"Check for: bugs, security issues, performance, best practices, and improvements.\n"
-            f"Be specific and give fixed versions where needed.",
-            system=DEV_SYSTEM,
-            max_tokens=2000
+            f"Senior code review:\n\n{code}\n\n"
+            f"Check: bugs, security, performance, best practices.",
+            system=DEV_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -127,10 +365,9 @@ def handle_command(token, chat_id, text):
         problem = args or "No problem described"
         send_telegram(token, chat_id, "Debugging...")
         reply = ask_groq(
-            f"Debug this problem and give the complete fix:\n\n{problem}\n\n"
-            f"Explain: what's wrong, why it happens, and the exact solution.",
-            system=DEV_SYSTEM,
-            max_tokens=2000
+            f"Debug and fix: {problem}\n"
+            f"Explain what's wrong and give the complete solution.",
+            system=DEV_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -138,11 +375,9 @@ def handle_command(token, chat_id, text):
         feature = args or "ZamVibe platform"
         send_telegram(token, chat_id, "Designing architecture...")
         reply = ask_groq(
-            f"Design the system architecture for: {feature}\n"
-            f"Include: tech stack, database schema, API design, scalability plan.\n"
-            f"Think like a CTO building for millions of Zambian users.",
-            system=DEV_SYSTEM,
-            max_tokens=2000
+            f"System architecture for: {feature}\n"
+            f"Include: tech stack, database, API design, scalability.",
+            system=CTO_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -151,10 +386,8 @@ def handle_command(token, chat_id, text):
         send_telegram(token, chat_id, "Building feature...")
         reply = ask_groq(
             f"Build this ZamVibe feature: {feature}\n"
-            f"Give: complete HTML/CSS/JS or Python code, ready to deploy.\n"
-            f"ZamVibe is a Zambian entertainment platform on Firebase/Vercel.",
-            system=DEV_SYSTEM,
-            max_tokens=2000
+            f"Give complete HTML/CSS/JS or Python code, ready to deploy.",
+            system=DEV_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -162,11 +395,10 @@ def handle_command(token, chat_id, text):
     elif cmd == "/trend":
         send_telegram(token, chat_id, "Scanning Zambian trends...")
         reply = ask_groq(
-            "What is the single hottest Zambian entertainment trend RIGHT NOW?\n"
-            "Give: trend name, why it's viral, key players, how ZamVibe should cover it, "
-            "and 3 content ideas around it.",
-            system=CONTENT_SYSTEM,
-            max_tokens=1000
+            "Hottest Zambian entertainment trend RIGHT NOW?\n"
+            "Give: trend name, why it's viral, key players, "
+            "how ZamVibe should cover it, and 3 content ideas.",
+            system=CONTENT_SYSTEM, max_tokens=1000
         )
         send_telegram(token, chat_id, reply)
 
@@ -174,28 +406,20 @@ def handle_command(token, chat_id, text):
         topic = args or "Zambian entertainment"
         send_telegram(token, chat_id, "Writing viral captions...")
         reply = ask_groq(
-            f"Write 5 viral social media captions for: {topic}\n"
-            f"Caption 1: TikTok (punchy, 1-2 lines)\n"
-            f"Caption 2: Instagram (storytelling, emojis)\n"
-            f"Caption 3: Facebook (engaging question)\n"
-            f"Caption 4: Twitter/X (bold statement)\n"
-            f"Caption 5: WhatsApp Status (short and viral)\n"
-            f"Add relevant Zambian hashtags. Make them feel authentic.",
-            system=CONTENT_SYSTEM,
-            max_tokens=1000
+            f"5 viral captions for: {topic}\n"
+            f"1. TikTok 2. Instagram 3. Facebook 4. Twitter 5. WhatsApp\n"
+            f"Add Zambian hashtags.",
+            system=CONTENT_SYSTEM, max_tokens=1000
         )
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/blog":
-        topic = args or "Zambian entertainment trends 2026"
+        topic = args or "Zambian entertainment 2026"
         send_telegram(token, chat_id, "Writing blog post...")
         reply = ask_groq(
-            f"Write a full SEO-optimized blog post for ZamVibe about: {topic}\n"
-            f"Include: viral headline, meta description, intro hook, "
-            f"3 main sections with subheadings, conclusion with CTA.\n"
-            f"Write for young Zambians aged 18-35. Make it engaging and shareable.",
-            system=CONTENT_SYSTEM,
-            max_tokens=2000
+            f"Full SEO blog post for ZamVibe about: {topic}\n"
+            f"Include: headline, intro hook, 3 sections, conclusion with CTA.",
+            system=CONTENT_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -203,41 +427,27 @@ def handle_command(token, chat_id, text):
         topic = args or "Zambian music scene"
         send_telegram(token, chat_id, "Writing video script...")
         reply = ask_groq(
-            f"Write a viral TikTok/YouTube script about: {topic}\n"
-            f"Include: hook (first 3 seconds), main content, call to action.\n"
-            f"Format: [SCENE] description then dialogue.\n"
-            f"Make it entertaining for Zambian audiences. Target length: 60-90 seconds.",
-            system=CONTENT_SYSTEM,
-            max_tokens=1500
+            f"Viral TikTok/YouTube script about: {topic}\n"
+            f"Include: hook, content, CTA. Format: [SCENE] then dialogue.",
+            system=CONTENT_SYSTEM, max_tokens=1500
         )
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/headline":
         topic = args or "ZamVibe entertainment"
-        send_telegram(token, chat_id, "Generating headlines...")
         reply = ask_groq(
-            f"Write 10 viral headlines about: {topic}\n"
-            f"Mix styles: shocking, curiosity, listicle, emotional, controversial.\n"
-            f"Make them perfect for ZamVibe — Zambia's entertainment platform.\n"
-            f"Number each headline.",
-            system=CONTENT_SYSTEM,
-            max_tokens=800
+            f"10 viral headlines about: {topic}\n"
+            f"Mix: shocking, curiosity, listicle, emotional.",
+            system=CONTENT_SYSTEM, max_tokens=800
         )
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/calendar":
         send_telegram(token, chat_id, "Building content calendar...")
         reply = ask_groq(
-            "Create a detailed 7-day ZamVibe content calendar.\n"
-            "For each day:\n"
-            "- Theme of the day\n"
-            "- Morning post idea (with caption)\n"
-            "- Afternoon post idea (with caption)\n"
-            "- Best posting times for Zambia\n"
-            "- Platform focus (TikTok/Instagram/Facebook)\n"
-            "Make it relevant to current Zambian culture and trends.",
-            system=CONTENT_SYSTEM,
-            max_tokens=2000
+            "7-day ZamVibe content calendar.\n"
+            "Each day: theme, morning post, afternoon post, best times, platform focus.",
+            system=CONTENT_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -245,12 +455,9 @@ def handle_command(token, chat_id, text):
         goal = args or "grow ZamVibe to 100k users"
         send_telegram(token, chat_id, "Building strategy...")
         reply = ask_groq(
-            f"Create a detailed content strategy to: {goal}\n"
-            f"Include: target audience, content pillars, posting schedule, "
-            f"growth tactics, monetization ideas, KPIs to track.\n"
-            f"This is for ZamVibe - Zambia's entertainment platform.",
-            system=CONTENT_SYSTEM,
-            max_tokens=2000
+            f"Content strategy to: {goal}\n"
+            f"Include: audience, content pillars, schedule, growth tactics, monetization, KPIs.",
+            system=CONTENT_SYSTEM, max_tokens=2000
         )
         send_telegram(token, chat_id, reply)
 
@@ -259,33 +466,37 @@ def handle_command(token, chat_id, text):
         subject = args or "ZamVibe platform"
         send_telegram(token, chat_id, "Analyzing...")
         reply = ask_groq(
-            f"Give a deep, expert analysis of: {subject}\n"
-            f"Cover: strengths, weaknesses, opportunities, threats, and recommendations.\n"
-            f"Be specific, data-driven, and actionable.",
-            system=AGENT_SYSTEM,
-            max_tokens=1500
+            f"Deep expert analysis of: {subject}\n"
+            f"Cover: strengths, weaknesses, opportunities, threats, recommendations.",
+            system=AGENT_SYSTEM, max_tokens=1500
         )
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/idea":
         reply = ask_groq(
-            "Generate one brilliant, innovative feature idea for ZamVibe.\n"
-            "Include: what it is, why users will love it, how to build it, "
-            "and expected impact on growth.\n"
-            "Be creative and think big!",
-            system=AGENT_SYSTEM,
-            max_tokens=800
+            "One brilliant innovative feature idea for ZamVibe.\n"
+            "Include: what it is, why users love it, how to build it, growth impact.",
+            system=AGENT_SYSTEM, max_tokens=800
         )
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/roast":
         subject = args or "ZamVibe"
         reply = ask_groq(
-            f"Give a brutally honest, expert critique of: {subject}\n"
-            f"Don't sugarcoat it. Point out every flaw, weakness, and missed opportunity.\n"
-            f"Then give specific ways to fix each problem.",
-            system=AGENT_SYSTEM,
-            max_tokens=1000
+            f"Brutally honest critique of: {subject}\n"
+            f"Every flaw and weakness. Then specific fixes for each.",
+            system=AGENT_SYSTEM, max_tokens=1000
+        )
+        send_telegram(token, chat_id, reply)
+
+    elif cmd == "/brainstorm":
+        topic = args or "ZamVibe growth"
+        send_telegram(token, chat_id, "Brainstorming...")
+        reply = ask_groq(
+            f"Generate 10 creative ideas for: {topic}\n"
+            f"Mix bold, practical, and innovative ideas.\n"
+            f"Rate each idea 1-10 for impact and feasibility.",
+            system=AGENT_SYSTEM, max_tokens=1500
         )
         send_telegram(token, chat_id, reply)
 
@@ -312,7 +523,7 @@ class handler(BaseHTTPRequestHandler):
             file_url = get_file_url(token, photo["file_id"])
             if file_url:
                 img_b64 = download_as_base64(file_url)
-                caption = msg.get("caption", "Analyze this image in detail. If it contains code, review it. If it contains a design, critique it.")
+                caption = msg.get("caption", "Analyze this image. If code, review it. If design, critique it.")
                 reply = ask_groq(caption, image_base64=img_b64) if img_b64 else "Could not process image."
             else:
                 reply = "Could not access the image."
