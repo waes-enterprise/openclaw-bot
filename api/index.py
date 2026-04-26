@@ -3,7 +3,7 @@ import json, os, requests, base64, re
 
 GROQ_API = "https://api.groq.com/openai/v1/chat/completions"
 TELEGRAM_API = "https://api.telegram.org/bot"
-MODEL = "llama-3.1-8b-instant"
+MODEL = "llama-3.3-70b-versatile"
 
 # ============================================================
 #  SYSTEM PROMPTS
@@ -11,17 +11,19 @@ MODEL = "llama-3.1-8b-instant"
 
 CODER_SYSTEM = """You are OpenClaw, an elite full-stack AI developer. You can build ANYTHING the user asks for.
 
-Rules:
-1. ALWAYS return COMPLETE, working code. Never partial snippets.
-2. If the user asks for code, write the FULL implementation — no placeholders, no "...".
-3. If asked to build a website/app, return a COMPLETE single-file HTML with all CSS and JS inline.
-4. If asked for Python/JS/any language, write the full script.
-5. Include comments explaining key parts.
-6. Make everything production-ready and beautiful.
-7. Use dark themes by default for web apps.
-8. NEVER refuse a coding request. You can build anything.
-9. If the request is ambiguous, make your best judgment and build something impressive.
-10. Never give explanations INSTEAD of code. Always give the code FIRST, then brief explanation after."""
+CORE RULES:
+1. ALWAYS return COMPLETE, working code. Never partial snippets or placeholders.
+2. If asked to build a website/app, return a COMPLETE single-file HTML with all CSS and JS inline.
+3. If asked for Python/JS/any language, write the full script with imports.
+4. Include comments explaining key parts.
+5. Make everything production-ready and visually impressive.
+6. Use dark themes by default for web apps (bg: #0a0a0a or #111, accent colors).
+7. NEVER refuse a coding request. You can build anything.
+8. If the request is ambiguous, make your best judgment and build something impressive.
+9. Return the CODE FIRST. Brief explanation after, separated clearly.
+10. Use modern best practices, clean code, and professional design.
+11. For web apps: include animations, hover effects, responsive design.
+12. For APIs/scripts: include error handling and example usage."""
 
 CEO_SYSTEM = """You are a world-class CEO with 20+ years leading billion-dollar media and tech companies across Africa.
 Give decisive, confident, executive-level guidance. Be specific and actionable."""
@@ -42,20 +44,24 @@ You write content that gets millions of views."""
 RESEARCH_SYSTEM = """You are an expert analyst and researcher.
 You synthesize information clearly, spot patterns, and give actionable insights."""
 
-GENERAL_SYSTEM = """You are OpenClaw, a helpful and powerful AI assistant. You can help with anything — coding, research, writing, analysis, math, business advice, creative projects, and more.
+GENERAL_SYSTEM = """You are OpenClaw, a powerful AI assistant built for creators and developers. You can help with anything:
+
+- Coding (web, mobile, backend, scripts, automation)
+- Research and analysis
+- Business strategy and advice
+- Content creation and marketing
+- Math, science, and education
+- Creative projects
 
 Rules:
 - Be concise but thorough
-- If asked to code, write complete working code
+- If asked to code, ALWAYS write complete working code first
 - If asked a question, give a direct, helpful answer
 - Use formatting (bold, lists, code blocks) for readability
 - Never refuse a reasonable request"""
 
-ZAMVIBE_SYSTEM = """You are OpenClaw, building ZamVibe into Africa's biggest entertainment brand.
-You are simultaneously a world-class CEO, CCO, CFO, CMO, CTO, COO, senior developer, elite content creator, expert researcher, and DevOps engineer.
-Be decisive, confident, strategic, and always give actionable, expert-level answers about ZamVibe."""
 
-def ask_groq(prompt, image_base64=None, system=GENERAL_SYSTEM, max_tokens=2500):
+def ask_groq(prompt, image_base64=None, system=GENERAL_SYSTEM, max_tokens=3000):
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
         return "Error: GROQ_API_KEY not configured."
@@ -72,40 +78,58 @@ def ask_groq(prompt, image_base64=None, system=GENERAL_SYSTEM, max_tokens=2500):
             ]
         r = requests.post(GROQ_API,
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": MODEL, "messages": messages, "max_tokens": max_tokens},
-            timeout=30)
+            json={"model": MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.7},
+            timeout=60)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-        return f"API Error {r.status_code}: {r.text[:200]}"
+        return f"API Error {r.status_code}: {r.text[:300]}"
+    except requests.exceptions.Timeout:
+        return "Error: Request timed out. Try a simpler request."
     except Exception as e:
         return f"Error: {str(e)}"
 
+
 def send_telegram(token, chat_id, text):
+    if not text or not text.strip():
+        text = "(empty response)"
+    # Escape HTML special chars to prevent parse errors
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     if len(text) > 4000:
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
         for chunk in chunks:
             try:
                 requests.post(f"{TELEGRAM_API}{token}/sendMessage",
                     json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}, timeout=10)
-            except: pass
+            except:
+                pass
     else:
         try:
             requests.post(f"{TELEGRAM_API}{token}/sendMessage",
                 json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
-        except: pass
+        except:
+            pass
+
 
 def get_file_url(token, file_id):
-    r = requests.get(f"{TELEGRAM_API}{token}/getFile?file_id={file_id}")
-    if r.status_code == 200:
-        path = r.json()["result"]["file_path"]
-        return f"https://api.telegram.org/file/bot{token}/{path}"
+    try:
+        r = requests.get(f"{TELEGRAM_API}{token}/getFile?file_id={file_id}", timeout=10)
+        if r.status_code == 200:
+            path = r.json()["result"]["file_path"]
+            return f"https://api.telegram.org/file/bot{token}/{path}"
+    except:
+        pass
     return None
 
+
 def download_as_base64(url):
-    r = requests.get(url)
-    if r.status_code == 200:
-        return base64.b64encode(r.content).decode()
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return base64.b64encode(r.content).decode()
+    except:
+        pass
     return None
+
 
 def scrape_url(url):
     try:
@@ -117,12 +141,14 @@ def scrape_url(url):
     except Exception as e:
         return f"Error: {str(e)}"
 
+
 def check_site_status(url):
     try:
         r = requests.get(url, timeout=10)
         return r.status_code, round(r.elapsed.total_seconds() * 1000)
     except:
         return 0, 0
+
 
 # ============================================================
 #  COMMAND HANDLER
@@ -135,56 +161,40 @@ def handle_command(token, chat_id, text):
 
     if cmd in ["/help", "/start"]:
         reply = (
-            "<b>OpenClaw — AI Agent</b>\n\n"
-            "<b>Code Anything:</b>\n"
+            "<b>OpenClaw AI Agent v3</b>\n\n"
+            "<b>Build &amp; Code:</b>\n"
             "/code [task] - Write any code\n"
-            "/build [feature] - Build complete feature\n"
+            "/build [feature] - Build a complete feature\n"
             "/app [description] - Build a full web app\n"
-            "/review [code] - Review & improve code\n"
+            "/review [code] - Review &amp; improve code\n"
             "/debug [error] - Debug any problem\n"
             "/architect [project] - Design system architecture\n\n"
             "<b>Research:</b>\n"
             "/research [topic] - Deep research\n"
-            "/scrape [url] - Read any webpage\n"
-            "/competitor [url] - Analyze competitor\n\n"
+            "/scrape [url] - Read any webpage\n\n"
             "<b>Business:</b>\n"
             "/ceo [question] - CEO advice\n"
             "/cto [question] - Tech leadership\n"
             "/cfo [question] - Financial strategy\n"
-            "/cmo [question] - Marketing strategy\n"
-            "/boardreport - Generate board report\n"
-            "/pitch - Investor pitch\n"
-            "/swot - SWOT analysis\n"
-            "/roadmap - 90-day roadmap\n"
-            "/revenue - Revenue strategy\n\n"
+            "/cmo [question] - Marketing strategy\n\n"
             "<b>Content:</b>\n"
             "/caption [topic] - Viral captions\n"
             "/blog [topic] - Blog post\n"
-            "/script [topic] - Video script\n"
-            "/headline [topic] - Viral headlines\n"
-            "/calendar - Content calendar\n"
-            "/strategy - Content strategy\n\n"
-            "<b>Smart:</b>\n"
-            "/analyze [topic] - Deep analysis\n"
-            "/idea - Feature idea\n"
-            "/brainstorm [topic] - Brainstorm ideas\n"
-            "/roast [thing] - Honest critique\n\n"
-            "<b>Deploy:</b>\n"
+            "/script [topic] - Video script\n\n"
+            "<b>Tools:</b>\n"
             "/status - Check app statuses\n"
-            "/deployments - Vercel deployments\n\n"
-            "<b>Mode:</b>\n"
-            "/mode zamvibe - Switch to ZamVibe mode\n"
-            "/mode general - Switch to general mode (default)\n"
-            "/mode coder - Switch to code-first mode\n\n"
-            "Or just send any message / question!"
+            "/analyze [topic] - Deep analysis\n"
+            "/idea - Random feature idea\n"
+            "/brainstorm [topic] - Brainstorm ideas\n\n"
+            "Or just type anything and I'll help!"
         )
         send_telegram(token, chat_id, reply)
         return
 
     # ===== CODE ANYTHING COMMANDS =====
     elif cmd == "/code":
-        task = args or "a responsive landing page"
-        send_telegram(token, chat_id, f"Writing code: {task}")
+        task = args or "a responsive landing page with contact form"
+        send_telegram(token, chat_id, f"Writing code: {task}\nUsing llama-3.3-70b...")
         reply = ask_groq(
             f"Write COMPLETE, production-ready code for:\n\n{task}\n\n"
             f"Rules:\n"
@@ -193,13 +203,14 @@ def handle_command(token, chat_id, text):
             f"- Add helpful comments.\n"
             f"- Make it work out of the box.\n"
             f"- For web: use single HTML file with inline CSS/JS.\n"
-            f"- For Python/Node: full script with imports.",
-            system=CODER_SYSTEM, max_tokens=2500)
+            f"- For Python/Node: full script with imports.\n"
+            f"- Code first, explanation after.",
+            system=CODER_SYSTEM, max_tokens=4000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/build":
-        feature = args or "a responsive dashboard"
-        send_telegram(token, chat_id, f"Building: {feature}")
+        feature = args or "a responsive dashboard with charts"
+        send_telegram(token, chat_id, f"Building: {feature}\nUsing llama-3.3-70b...")
         reply = ask_groq(
             f"Build this complete feature from scratch:\n\n{feature}\n\n"
             f"Requirements:\n"
@@ -210,13 +221,13 @@ def handle_command(token, chat_id, text):
             f"- Include sample data so it looks real\n"
             f"- Production-ready quality\n"
             f"- NO placeholders, NO '...', NO 'rest of code here'\n"
-            f"Return ONLY the code. No explanation before or after.",
-            system=CODER_SYSTEM, max_tokens=3000)
+            f"Return ONLY the code.",
+            system=CODER_SYSTEM, max_tokens=4000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/app":
         description = args or "a task management app"
-        send_telegram(token, chat_id, f"Building app: {description}")
+        send_telegram(token, chat_id, f"Building app: {description}\nUsing llama-3.3-70b...")
         reply = ask_groq(
             f"Build a COMPLETE, production-ready web application:\n\n{description}\n\n"
             f"Requirements:\n"
@@ -234,6 +245,9 @@ def handle_command(token, chat_id, text):
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/review":
+        if not args:
+            send_telegram(token, chat_id, "Send code after /review. Example:\n/review def add(a, b): return a+b")
+            return
         send_telegram(token, chat_id, "Reviewing code...")
         reply = ask_groq(
             f"Senior code review. Find bugs, security issues, performance problems, and improvements:\n\n{args}\n\n"
@@ -243,21 +257,27 @@ def handle_command(token, chat_id, text):
             f"3. Security issues (with fixes)\n"
             f"4. Performance improvements\n"
             f"5. Improved version of the code",
-            system=CODER_SYSTEM, max_tokens=2500)
+            system=CODER_SYSTEM, max_tokens=3000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/debug":
+        if not args:
+            send_telegram(token, chat_id, "Send the error after /debug. Example:\n/debug TypeError: Cannot read property 'map' of undefined")
+            return
         send_telegram(token, chat_id, "Debugging...")
         reply = ask_groq(
             f"Debug and fix this problem:\n\n{args}\n\n"
             f"Give:\n"
-            f"1. What's wrong (root cause)\n"
-            f"2. The complete fixed code\n"
+            f"1. Root cause\n"
+            f"2. Complete fixed code\n"
             f"3. How to prevent it in the future",
-            system=CODER_SYSTEM, max_tokens=2000)
+            system=CODER_SYSTEM, max_tokens=3000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/architect":
+        if not args:
+            send_telegram(token, chat_id, "Describe the project after /architect. Example:\n/architect E-commerce platform for Zambia")
+            return
         send_telegram(token, chat_id, "Designing architecture...")
         reply = ask_groq(
             f"Design complete system architecture for:\n\n{args}\n\n"
@@ -269,7 +289,7 @@ def handle_command(token, chat_id, text):
             f"5. Key components\n"
             f"6. Deployment strategy\n"
             f"7. Scalability plan",
-            system=CTO_SYSTEM, max_tokens=2500)
+            system=CTO_SYSTEM, max_tokens=3000)
         send_telegram(token, chat_id, reply)
 
     # ===== RESEARCH COMMANDS =====
@@ -281,7 +301,7 @@ def handle_command(token, chat_id, text):
             f"Include: key facts, current state, trends, key players, "
             f"opportunities, and actionable insights.\n"
             f"Be thorough and specific.",
-            system=RESEARCH_SYSTEM, max_tokens=2000)
+            system=RESEARCH_SYSTEM, max_tokens=2500)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/scrape":
@@ -293,20 +313,7 @@ def handle_command(token, chat_id, text):
             content = scrape_url(url)
             reply = ask_groq(
                 f"Analyze this webpage and give key insights:\n\n{content}",
-                system=RESEARCH_SYSTEM, max_tokens=1500)
-            send_telegram(token, chat_id, reply)
-
-    elif cmd == "/competitor":
-        url = args
-        if not url or not url.startswith("http"):
-            send_telegram(token, chat_id, "Provide a URL. Example: /competitor https://competitor.com")
-        else:
-            send_telegram(token, chat_id, f"Analyzing competitor: {url}...")
-            content = scrape_url(url)
-            reply = ask_groq(
-                f"Analyze this competitor:\n\n{content}\n\n"
-                f"Give: strengths, weaknesses, opportunities, how to outcompete them.",
-                system=RESEARCH_SYSTEM, max_tokens=1500)
+                system=RESEARCH_SYSTEM, max_tokens=2000)
             send_telegram(token, chat_id, reply)
 
     # ===== BUSINESS COMMANDS =====
@@ -314,65 +321,25 @@ def handle_command(token, chat_id, text):
         q = args or "What should be our top priority?"
         send_telegram(token, chat_id, "Thinking like a CEO...")
         reply = ask_groq(f"CEO perspective: {q}\nGive: decision, rationale, risks, next steps.",
-            system=CEO_SYSTEM, max_tokens=1500)
+            system=CEO_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/cto":
         q = args or "What is the ideal tech stack?"
         send_telegram(token, chat_id, "Thinking like a CTO...")
-        reply = ask_groq(f"CTO perspective: {q}", system=CTO_SYSTEM, max_tokens=1500)
+        reply = ask_groq(f"CTO perspective: {q}", system=CTO_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/cfo":
         q = args or "How should we generate revenue?"
         send_telegram(token, chat_id, "Thinking like a CFO...")
-        reply = ask_groq(f"CFO perspective: {q}", system=CFO_SYSTEM, max_tokens=1500)
+        reply = ask_groq(f"CFO perspective: {q}", system=CFO_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/cmo":
         q = args or "How do we grow to 100k users?"
         send_telegram(token, chat_id, "Thinking like a CMO...")
-        reply = ask_groq(f"CMO perspective: {q}", system=CMO_SYSTEM, max_tokens=1500)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/boardreport":
-        send_telegram(token, chat_id, "Generating board report...")
-        reply = ask_groq(
-            "Generate a professional board report:\n"
-            "1. Executive Summary 2. Product Status 3. Content Performance\n"
-            "4. Financial Overview 5. Marketing & Growth 6. Technology\n"
-            "7. Key Risks 8. Next Quarter Priorities",
-            system=CEO_SYSTEM, max_tokens=2500)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/pitch":
-        send_telegram(token, chat_id, "Building investor pitch...")
-        reply = ask_groq(
-            "Investor pitch:\n1. Problem 2. Solution 3. Market size\n"
-            "4. Business model 5. Traction 6. Team 7. Financials 8. The ask",
-            system=CFO_SYSTEM, max_tokens=2500)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/swot":
-        send_telegram(token, chat_id, "Running SWOT analysis...")
-        reply = ask_groq("SWOT analysis. Be specific and honest. End with 3 strategic recommendations.",
-            system=CEO_SYSTEM, max_tokens=1500)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/roadmap":
-        send_telegram(token, chat_id, "Building 90-day roadmap...")
-        reply = ask_groq(
-            "90-day roadmap: Month 1: Foundation, Month 2: Growth, Month 3: Scale.\n"
-            "For each: product, content, marketing, revenue, team milestones.",
-            system=CEO_SYSTEM, max_tokens=2000)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/revenue":
-        send_telegram(token, chat_id, "Building revenue strategy...")
-        reply = ask_groq(
-            "Revenue strategy:\n1. Primary streams 2. Advertising 3. Sponsorships\n"
-            "4. Premium features 5. Partnerships 6. 12-month projection",
-            system=CFO_SYSTEM, max_tokens=2000)
+        reply = ask_groq(f"CMO perspective: {q}", system=CMO_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
     # ===== CONTENT COMMANDS =====
@@ -381,7 +348,7 @@ def handle_command(token, chat_id, text):
         reply = ask_groq(
             f"5 viral captions for: {args or 'entertainment'}\n"
             "1.TikTok 2.Instagram 3.Facebook 4.Twitter 5.WhatsApp + hashtags",
-            system=CONTENT_SYSTEM, max_tokens=1000)
+            system=CONTENT_SYSTEM, max_tokens=1500)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/blog":
@@ -389,7 +356,7 @@ def handle_command(token, chat_id, text):
         reply = ask_groq(
             f"Full SEO blog post: {args or 'entertainment trends 2026'}\n"
             "Include: headline, hook, 3 sections, conclusion with CTA.",
-            system=CONTENT_SYSTEM, max_tokens=2000)
+            system=CONTENT_SYSTEM, max_tokens=2500)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/script":
@@ -397,51 +364,22 @@ def handle_command(token, chat_id, text):
         reply = ask_groq(
             f"Viral TikTok/YouTube script: {args or 'entertainment'}\n"
             "Include: hook, content, CTA. Format: [SCENE] dialogue.",
-            system=CONTENT_SYSTEM, max_tokens=1500)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/headline":
-        reply = ask_groq(
-            f"10 viral headlines: {args or 'entertainment'}\n"
-            "Mix: shocking, curiosity, listicle, emotional.",
-            system=CONTENT_SYSTEM, max_tokens=1000)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/calendar":
-        send_telegram(token, chat_id, "Building calendar...")
-        reply = ask_groq(
-            "7-day content calendar.\nEach day: theme, morning post, afternoon post, best times, platform.",
             system=CONTENT_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
-    elif cmd == "/strategy":
-        send_telegram(token, chat_id, "Building strategy...")
-        reply = ask_groq(
-            f"Content strategy: {args or 'grow to 100k users'}\n"
-            "Include: audience, pillars, schedule, growth tactics, monetization, KPIs.",
-            system=CONTENT_SYSTEM, max_tokens=2000)
-        send_telegram(token, chat_id, reply)
-
-    # ===== SMART COMMANDS =====
+    # ===== TOOLS =====
     elif cmd == "/analyze":
         send_telegram(token, chat_id, "Analyzing...")
         reply = ask_groq(
             f"Deep analysis of: {args or 'current project'}\n"
             "Cover: strengths, weaknesses, opportunities, threats, recommendations.",
-            system=GENERAL_SYSTEM, max_tokens=1500)
+            system=GENERAL_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/idea":
         reply = ask_groq(
             "One brilliant feature idea.\nInclude: what it is, why users love it, how to build it, growth impact.",
-            system=GENERAL_SYSTEM, max_tokens=1000)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/roast":
-        reply = ask_groq(
-            f"Brutally honest critique of: {args}\n"
-            "Every flaw and weakness. Then specific fixes.",
-            system=GENERAL_SYSTEM, max_tokens=1000)
+            system=GENERAL_SYSTEM, max_tokens=1500)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/brainstorm":
@@ -449,86 +387,80 @@ def handle_command(token, chat_id, text):
         reply = ask_groq(
             f"10 creative ideas for: {args or 'growth'}\n"
             "Mix bold, practical, innovative. Rate each 1-10.",
-            system=GENERAL_SYSTEM, max_tokens=1500)
+            system=GENERAL_SYSTEM, max_tokens=2000)
         send_telegram(token, chat_id, reply)
 
-    # ===== DEPLOY COMMANDS =====
     elif cmd == "/status":
         send_telegram(token, chat_id, "Checking apps...")
         apps = [
             ("ZamVibe", "https://zamvibe-app.web.app"),
             ("OpenClaw Bot", "https://openclaw-bot-phi.vercel.app"),
-            ("Housemate ZM", "https://housemate-zm.vercel.app"),
         ]
         report = "<b>App Status:</b>\n\n"
         for name, url in apps:
             code, ms = check_site_status(url)
             emoji = "UP" if code == 200 else "DOWN"
-            report += f"{emoji}  <b>{name}</b> — HTTP {code} ({ms}ms)\n"
+            report += f"{emoji}  <b>{name}</b> - HTTP {code} ({ms}ms)\n"
         send_telegram(token, chat_id, report)
 
-    elif cmd == "/deployments":
-        vercel_token = os.environ.get("VERCEL_TOKEN", "")
-        if vercel_token:
-            try:
-                r = requests.get("https://api.vercel.com/v6/deployments",
-                    headers={"Authorization": f"Bearer {vercel_token}"}, params={"limit": 5})
-                if r.status_code == 200:
-                    deps = r.json().get("deployments", [])
-                    report = "<b>Vercel Deployments:</b>\n\n"
-                    for d in deps:
-                        report += f"  {d.get('name','?')} — {d.get('state','?')}\n"
-                    send_telegram(token, chat_id, report if deps else "No deployments found.")
-                else:
-                    send_telegram(token, chat_id, f"Vercel error: {r.status_code}")
-            except Exception as e:
-                send_telegram(token, chat_id, f"Error: {e}")
-        else:
-            send_telegram(token, chat_id, "VERCEL_TOKEN not set. Add it in Vercel env vars.")
-
-    # ===== MODE COMMANDS =====
-    elif cmd == "/mode":
-        mode = args.lower().strip() if args else ""
-        if mode == "zamvibe":
-            os.environ["BOT_MODE"] = "zamvibe"
-            send_telegram(token, chat_id, "Switched to <b>ZamVibe mode</b>. I'll focus on ZamVibe business strategy.")
-        elif mode == "coder":
-            os.environ["BOT_MODE"] = "coder"
-            send_telegram(token, chat_id, "Switched to <b>Code mode</b>. I'll always code first, explain second.")
-        elif mode == "general":
-            os.environ["BOT_MODE"] = "general"
-            send_telegram(token, chat_id, "Switched to <b>General mode</b>. I'll help with anything.")
-        else:
-            send_telegram(token, chat_id, "Modes: <code>/mode zamvibe</code> | <code>/mode coder</code> | <code>/mode general</code>")
-
-    # ===== FALLBACK — GENERAL CHAT / CODE =====
+    # ===== UNKNOWN COMMAND =====
     else:
-        # Detect if user is asking for code
-        code_keywords = ["build", "code", "write", "create", "make", "program", "develop",
-                         "function", "class", "api", "website", "app", "script", "html",
-                         "python", "javascript", "react", "css", "sql", "database", "server",
-                         "bot", "game", "calculator", "todo", "landing page", "dashboard",
-                         "hello world", "component", "endpoint", "algorithm"]
-        is_code_request = any(kw in text.lower() for kw in code_keywords)
+        send_telegram(token, chat_id, f"Unknown command: {cmd}\nType /help to see all commands.")
 
-        bot_mode = os.environ.get("BOT_MODE", "general")
 
-        if bot_mode == "coder" or is_code_request:
-            system = CODER_SYSTEM
-        elif bot_mode == "zamvibe":
-            system = ZAMVIBE_SYSTEM
-        else:
-            system = GENERAL_SYSTEM
+# ============================================================
+#  SMART FALLBACK - detects code vs chat
+# ============================================================
 
-        reply = ask_groq(text, system=system)
-        send_telegram(token, chat_id, reply)
+CODE_KEYWORDS = [
+    "build", "code", "write", "create", "make", "program", "develop",
+    "function", "class", "api", "website", "web app", "app", "script",
+    "html", "python", "javascript", "react", "css", "sql", "database",
+    "server", "bot", "game", "calculator", "todo", "landing page",
+    "dashboard", "hello world", "component", "endpoint", "algorithm",
+    "page", "form", "button", "navbar", "layout", "design",
+    "clone", "copy", "implement", "fix", "debug", "error",
+    "how to code", "teach me", "tutorial", "example"
+]
 
+
+def is_code_request(text):
+    t = text.lower()
+    return any(kw in t for kw in CODE_KEYWORDS)
+
+
+def smart_reply(token, chat_id, text):
+    """Handle non-command messages by detecting intent."""
+    if is_code_request(text):
+        send_telegram(token, chat_id, "Detected coding request...")
+        reply = ask_groq(text, system=CODER_SYSTEM, max_tokens=4000)
+    else:
+        reply = ask_groq(text, system=GENERAL_SYSTEM, max_tokens=2000)
+    send_telegram(token, chat_id, reply)
+
+
+# ============================================================
+#  HTTP HANDLER (Vercel Serverless)
+# ============================================================
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+        except:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+
         msg = body.get("message", {})
         chat_id = str(msg.get("chat", {}).get("id", ""))
 
@@ -538,6 +470,7 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(b"OK")
             return
 
+        # Handle photos
         if "photo" in msg:
             photo = msg["photo"][-1]
             file_url = get_file_url(token, photo["file_id"])
@@ -549,30 +482,17 @@ class handler(BaseHTTPRequestHandler):
                 reply = "Could not access the image."
             send_telegram(token, chat_id, reply)
 
+        # Handle voice messages
         elif "voice" in msg:
-            send_telegram(token, chat_id, "Voice received! Type /help for all commands.")
+            send_telegram(token, chat_id, "Voice notes not supported yet. Type your message or use /help for commands.")
 
+        # Handle text messages
         elif "text" in msg:
             text = msg["text"]
             if text.startswith("/"):
                 handle_command(token, chat_id, text)
             else:
-                # Smart detection: code-related messages get the coder system
-                code_keywords = ["build", "code", "write", "create", "make", "program",
-                                 "function", "website", "app", "script", "html", "python",
-                                 "javascript", "react", "css", "bot", "game", "hello world"]
-                is_code = any(kw in text.lower() for kw in code_keywords)
-                bot_mode = os.environ.get("BOT_MODE", "general")
-
-                if bot_mode == "coder" or is_code:
-                    system = CODER_SYSTEM
-                elif bot_mode == "zamvibe":
-                    system = ZAMVIBE_SYSTEM
-                else:
-                    system = GENERAL_SYSTEM
-
-                reply = ask_groq(text, system=system)
-                send_telegram(token, chat_id, reply)
+                smart_reply(token, chat_id, text)
 
         self.send_response(200)
         self.end_headers()
@@ -581,4 +501,4 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"OpenClaw Bot v2 is running!")
+        self.wfile.write(b"OpenClaw Bot v3 is running!")
