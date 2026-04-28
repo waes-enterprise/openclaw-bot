@@ -482,4 +482,4 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200); self.end_headers()
-        self.wfile.write(b"OpenClaw Bot v5 is running! 🤖")
+        self.wfile.write(b"OpenClaw Bot v5 is running!")
