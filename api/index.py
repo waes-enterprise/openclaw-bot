@@ -1,9 +1,44 @@
 from http.server import BaseHTTPRequestHandler
-import json, os, requests, base64, re
+import json, os, requests, base64, re, time
+
+# ============================================================
+#  CONFIGURATION
+# ============================================================
 
 GROQ_API = "https://api.groq.com/openai/v1/chat/completions"
+OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
 TELEGRAM_API = "https://api.telegram.org/bot"
-MODEL = "llama-3.3-70b-versatile"
+
+# Primary model (Groq - fast, free)
+PRIMARY_MODEL = "llama-3.3-70b-versatile"
+PRIMARY_PROVIDER = "groq"
+
+# Fallback model (OpenRouter - reliable, free tier)
+FALLBACK_MODEL = "deepseek/deepseek-chat-v3-0324:free"
+FALLBACK_PROVIDER = "openrouter"
+
+# ============================================================
+#  IN-MEMORY CONVERSATION HISTORY (per chat)
+# ============================================================
+MAX_HISTORY = 10  # messages per chat
+
+conversation_history = {}
+
+def get_history(chat_id):
+    if chat_id not in conversation_history:
+        conversation_history[chat_id] = []
+    return conversation_history[chat_id]
+
+def add_to_history(chat_id, role, content):
+    history = get_history(chat_id)
+    history.append({"role": role, "content": content})
+    # Keep only last N messages
+    if len(history) > MAX_HISTORY:
+        conversation_history[chat_id] = history[-MAX_HISTORY:]
+
+def clear_history(chat_id):
+    if chat_id in conversation_history:
+        del conversation_history[chat_id]
 
 # ============================================================
 #  SYSTEM PROMPTS
@@ -23,7 +58,8 @@ CORE RULES:
 9. Return the CODE FIRST. Brief explanation after, separated clearly.
 10. Use modern best practices, clean code, and professional design.
 11. For web apps: include animations, hover effects, responsive design.
-12. For APIs/scripts: include error handling and example usage."""
+12. For APIs/scripts: include error handling and example usage.
+13. IMPORTANT: Always wrap code in proper markdown code blocks with language identifier."""
 
 CEO_SYSTEM = """You are a world-class CEO with 20+ years leading billion-dollar media and tech companies across Africa.
 Give decisive, confident, executive-level guidance. Be specific and actionable."""
@@ -58,57 +94,261 @@ Rules:
 - If asked to code, ALWAYS write complete working code first
 - If asked a question, give a direct, helpful answer
 - Use formatting (bold, lists, code blocks) for readability
-- Never refuse a reasonable request"""
+- Never refuse a reasonable request
+- Remember context from earlier messages in the conversation"""
 
 
-def ask_groq(prompt, image_base64=None, system=GENERAL_SYSTEM, max_tokens=3000):
+# ============================================================
+#  LLM PROVIDERS WITH FALLBACK
+# ============================================================
+
+def ask_groq(messages, max_tokens=3000):
+    """Call Groq API (primary provider)."""
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
-        return "Error: GROQ_API_KEY not configured."
+        return None
     try:
-        if image_base64:
-            messages = [{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
-                {"type": "text", "text": prompt or "Analyze this image in detail."}
-            ]}]
-        else:
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt}
-            ]
         r = requests.post(GROQ_API,
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.7},
+            json={"model": PRIMARY_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.7},
+            timeout=45)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+        print(f"Groq error {r.status_code}: {r.text[:200]}")
+        return None
+    except requests.exceptions.Timeout:
+        print("Groq timeout")
+        return None
+    except Exception as e:
+        print(f"Groq exception: {e}")
+        return None
+
+
+def ask_openrouter(messages, max_tokens=3000):
+    """Call OpenRouter API (fallback provider)."""
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        return None
+    try:
+        r = requests.post(OPENROUTER_API,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "HTTP-Referer": "https://openclaw-bot.vercel.app",
+                     "X-Title": "OpenClaw Bot"},
+            json={"model": FALLBACK_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.7},
             timeout=60)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-        return f"API Error {r.status_code}: {r.text[:300]}"
+        print(f"OpenRouter error {r.status_code}: {r.text[:200]}")
+        return None
     except requests.exceptions.Timeout:
-        return "Error: Request timed out. Try a simpler request."
+        print("OpenRouter timeout")
+        return None
     except Exception as e:
-        return f"Error: {str(e)}"
+        print(f"OpenRouter exception: {e}")
+        return None
 
 
-def send_telegram(token, chat_id, text):
+def ask_llm(prompt, image_base64=None, system=GENERAL_SYSTEM, max_tokens=3000, chat_id=None):
+    """Try Groq first, fall back to OpenRouter. Includes conversation history."""
+    # Build messages with history
+    messages = []
+
+    # Add system prompt
+    messages.append({"role": "system", "content": system})
+
+    # Add conversation history (if any)
+    if chat_id:
+        history = get_history(chat_id)
+        for msg in history:
+            messages.append(msg)
+
+    # Build user message
+    if image_base64:
+        user_content = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
+            {"type": "text", "text": prompt or "Analyze this image in detail."}
+        ]
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": prompt})
+
+    # Try Groq first
+    result = ask_groq(messages, max_tokens)
+    if result:
+        # Save to history
+        if chat_id and not image_base64:
+            add_to_history(chat_id, "user", prompt)
+            add_to_history(chat_id, "assistant", result)
+        return result
+
+    # Fallback to OpenRouter
+    result = ask_openrouter(messages, max_tokens)
+    if result:
+        if chat_id and not image_base64:
+            add_to_history(chat_id, "user", prompt)
+            add_to_history(chat_id, "assistant", result)
+        return result
+
+    return "⚠️ Both AI providers are currently unavailable. Please try again in a moment."
+
+
+# ============================================================
+#  TELEGRAM MESSAGE SENDING (Fixed: proper code formatting)
+# ============================================================
+
+def escape_markdown_v2(text):
+    """Escape special characters for Telegram MarkdownV2."""
+    # Characters that need escaping in MarkdownV2
+    special = r'_*[]()~`>#+-=|{}.!'
+    result = ""
+    i = 0
+    in_code_block = False
+    in_inline_code = False
+
+    while i < len(text):
+        ch = text[i]
+
+        # Track code blocks
+        if text[i:i+3] == '```':
+            in_code_block = not in_code_block
+            result += '```'
+            i += 3
+            continue
+
+        if ch == '`' and not in_code_block:
+            in_inline_code = not in_inline_code
+            result += '`'
+            i += 1
+            continue
+
+        # Don't escape inside code blocks
+        if in_code_block or in_inline_code:
+            result += ch
+            i += 1
+            continue
+
+        if ch in special:
+            result += '\\' + ch
+        else:
+            result += ch
+        i += 1
+
+    return result
+
+
+def send_telegram(token, chat_id, text, parse_mode=None):
+    """Send a Telegram message with smart formatting.
+    
+    Strategy:
+    1. If text is short and has no code blocks, use plain text
+    2. If text has code blocks, use MarkdownV2 for proper formatting
+    3. Split long messages at code block boundaries to avoid breaking code
+    """
     if not text or not text.strip():
         text = "(empty response)"
-    # Escape HTML special chars to prevent parse errors
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    if len(text) > 4000:
-        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+
+    # Check if text contains code blocks
+    has_code_blocks = '```' in text
+
+    if has_code_blocks:
+        # Split at code block boundaries for clean chunking
+        chunks = split_at_code_blocks(text, 3800)
         for chunk in chunks:
-            try:
-                requests.post(f"{TELEGRAM_API}{token}/sendMessage",
-                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}, timeout=10)
-            except:
-                pass
+            send_single_message(token, chat_id, chunk, use_markdown=True)
     else:
+        # Plain text - simple chunking
+        if len(text) <= 4000:
+            send_single_message(token, chat_id, text, use_markdown=False)
+        else:
+            # Split at newlines
+            parts = text.split('\n\n')
+            current = ""
+            for part in parts:
+                if len(current) + len(part) + 2 > 3800:
+                    if current:
+                        send_single_message(token, chat_id, current, use_markdown=False)
+                    current = part
+                else:
+                    current += "\n\n" + part if current else part
+            if current:
+                send_single_message(token, chat_id, current, use_markdown=False)
+
+
+def split_at_code_blocks(text, max_len):
+    """Split text at code block boundaries to avoid breaking code."""
+    chunks = []
+    # Find all code block positions
+    parts = re.split(r'(```[\s\S]*?```)', text)
+
+    current = ""
+    for part in parts:
+        if len(current) + len(part) > max_len and current:
+            chunks.append(current.strip())
+            current = part
+        else:
+            current += part
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return chunks if chunks else [text]
+
+
+def send_single_message(token, chat_id, text, use_markdown=False):
+    """Send a single Telegram message with retry and fallback."""
+    if use_markdown:
+        # Try MarkdownV2 first
+        escaped = escape_markdown_v2(text)
         try:
-            requests.post(f"{TELEGRAM_API}{token}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+            r = requests.post(f"{TELEGRAM_API}{token}/sendMessage",
+                json={"chat_id": chat_id, "text": escaped, "parse_mode": "MarkdownV2"}, timeout=10)
+            if r.status_code == 200:
+                return
         except:
             pass
 
+        # Fallback to HTML with pre tags for code
+        try:
+            html_text = code_to_html(text)
+            r = requests.post(f"{TELEGRAM_API}{token}/sendMessage",
+                json={"chat_id": chat_id, "text": html_text, "parse_mode": "HTML"}, timeout=10)
+            if r.status_code == 200:
+                return
+        except:
+            pass
+
+    # Final fallback: plain text
+    try:
+        requests.post(f"{TELEGRAM_API}{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text}, timeout=10)
+    except:
+        pass
+
+
+def code_to_html(text):
+    """Convert markdown code blocks to HTML pre/code tags for Telegram."""
+    # Replace code blocks with HTML pre/code
+    result = re.sub(
+        r'```(\w*)\n([\s\S]*?)```',
+        lambda m: f'<pre><code>{html_escape(m.group(2))}</code></pre>',
+        text
+    )
+    # Replace inline code
+    result = re.sub(r'`([^`]+)`', lambda m: f'<code>{html_escape(m.group(1))}</code>', result)
+    # Escape remaining HTML
+    # But be careful not to double-escape the pre/code blocks we just created
+    # Simple approach: just escape the non-code parts
+    return result
+
+
+def html_escape(text):
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ============================================================
+#  UTILITY FUNCTIONS
+# ============================================================
 
 def get_file_url(token, file_id):
     try:
@@ -161,41 +401,48 @@ def handle_command(token, chat_id, text):
 
     if cmd in ["/help", "/start"]:
         reply = (
-            "<b>OpenClaw AI Agent v3</b>\n\n"
-            "<b>Build &amp; Code:</b>\n"
+            "🤖 <b>OpenClaw AI Agent v4</b>\n\n"
+            "🔨 <b>Build &amp; Code:</b>\n"
             "/code [task] - Write any code\n"
             "/build [feature] - Build a complete feature\n"
-            "/app [description] - Build a full web app\n"
+            "/app [desc] - Build a full web app\n"
             "/review [code] - Review &amp; improve code\n"
             "/debug [error] - Debug any problem\n"
-            "/architect [project] - Design system architecture\n\n"
-            "<b>Research:</b>\n"
+            "/architect [project] - Design architecture\n\n"
+            "🔍 <b>Research:</b>\n"
             "/research [topic] - Deep research\n"
             "/scrape [url] - Read any webpage\n\n"
-            "<b>Business:</b>\n"
+            "💼 <b>Business:</b>\n"
             "/ceo [question] - CEO advice\n"
             "/cto [question] - Tech leadership\n"
             "/cfo [question] - Financial strategy\n"
             "/cmo [question] - Marketing strategy\n\n"
-            "<b>Content:</b>\n"
+            "📝 <b>Content:</b>\n"
             "/caption [topic] - Viral captions\n"
             "/blog [topic] - Blog post\n"
             "/script [topic] - Video script\n\n"
-            "<b>Tools:</b>\n"
+            "🛠 <b>Tools:</b>\n"
             "/status - Check app statuses\n"
             "/analyze [topic] - Deep analysis\n"
             "/idea - Random feature idea\n"
-            "/brainstorm [topic] - Brainstorm ideas\n\n"
-            "Or just type anything and I'll help!"
+            "/brainstorm [topic] - Brainstorm ideas\n"
+            "/clear - Clear chat history\n\n"
+            "💬 Or just type anything and I'll help!\n"
+            "📸 Send images for analysis"
         )
-        send_telegram(token, chat_id, reply)
+        send_telegram(token, chat_id, reply, parse_mode="HTML")
+        return
+
+    elif cmd == "/clear":
+        clear_history(chat_id)
+        send_telegram(token, chat_id, "🧹 Chat history cleared. Starting fresh!")
         return
 
     # ===== CODE ANYTHING COMMANDS =====
     elif cmd == "/code":
         task = args or "a responsive landing page with contact form"
-        send_telegram(token, chat_id, f"Writing code: {task}\nUsing llama-3.3-70b...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, f"⚡ Writing code: {task}")
+        reply = ask_llm(
             f"Write COMPLETE, production-ready code for:\n\n{task}\n\n"
             f"Rules:\n"
             f"- Return the FULL code. No placeholders.\n"
@@ -205,13 +452,13 @@ def handle_command(token, chat_id, text):
             f"- For web: use single HTML file with inline CSS/JS.\n"
             f"- For Python/Node: full script with imports.\n"
             f"- Code first, explanation after.",
-            system=CODER_SYSTEM, max_tokens=4000)
+            system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/build":
         feature = args or "a responsive dashboard with charts"
-        send_telegram(token, chat_id, f"Building: {feature}\nUsing llama-3.3-70b...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, f"🔨 Building: {feature}")
+        reply = ask_llm(
             f"Build this complete feature from scratch:\n\n{feature}\n\n"
             f"Requirements:\n"
             f"- COMPLETE working code, not partial\n"
@@ -222,13 +469,13 @@ def handle_command(token, chat_id, text):
             f"- Production-ready quality\n"
             f"- NO placeholders, NO '...', NO 'rest of code here'\n"
             f"Return ONLY the code.",
-            system=CODER_SYSTEM, max_tokens=4000)
+            system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/app":
         description = args or "a task management app"
-        send_telegram(token, chat_id, f"Building app: {description}\nUsing llama-3.3-70b...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, f"🚀 Building app: {description}")
+        reply = ask_llm(
             f"Build a COMPLETE, production-ready web application:\n\n{description}\n\n"
             f"Requirements:\n"
             f"1. Single HTML file with ALL CSS and JavaScript inline\n"
@@ -241,15 +488,15 @@ def handle_command(token, chat_id, text):
             f"8. Professional, modern design\n"
             f"9. NO placeholders or incomplete sections\n"
             f"10. Return ONLY the complete HTML code",
-            system=CODER_SYSTEM, max_tokens=4000)
+            system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/review":
         if not args:
             send_telegram(token, chat_id, "Send code after /review. Example:\n/review def add(a, b): return a+b")
             return
-        send_telegram(token, chat_id, "Reviewing code...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "🔍 Reviewing code...")
+        reply = ask_llm(
             f"Senior code review. Find bugs, security issues, performance problems, and improvements:\n\n{args}\n\n"
             f"Format:\n"
             f"1. Rating: X/10\n"
@@ -257,29 +504,29 @@ def handle_command(token, chat_id, text):
             f"3. Security issues (with fixes)\n"
             f"4. Performance improvements\n"
             f"5. Improved version of the code",
-            system=CODER_SYSTEM, max_tokens=3000)
+            system=CODER_SYSTEM, max_tokens=3000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/debug":
         if not args:
             send_telegram(token, chat_id, "Send the error after /debug. Example:\n/debug TypeError: Cannot read property 'map' of undefined")
             return
-        send_telegram(token, chat_id, "Debugging...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "🐛 Debugging...")
+        reply = ask_llm(
             f"Debug and fix this problem:\n\n{args}\n\n"
             f"Give:\n"
             f"1. Root cause\n"
             f"2. Complete fixed code\n"
             f"3. How to prevent it in the future",
-            system=CODER_SYSTEM, max_tokens=3000)
+            system=CODER_SYSTEM, max_tokens=3000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/architect":
         if not args:
             send_telegram(token, chat_id, "Describe the project after /architect. Example:\n/architect E-commerce platform for Zambia")
             return
-        send_telegram(token, chat_id, "Designing architecture...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "🏗 Designing architecture...")
+        reply = ask_llm(
             f"Design complete system architecture for:\n\n{args}\n\n"
             f"Include:\n"
             f"1. Tech stack with rationale\n"
@@ -289,19 +536,19 @@ def handle_command(token, chat_id, text):
             f"5. Key components\n"
             f"6. Deployment strategy\n"
             f"7. Scalability plan",
-            system=CTO_SYSTEM, max_tokens=3000)
+            system=CTO_SYSTEM, max_tokens=3000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     # ===== RESEARCH COMMANDS =====
     elif cmd == "/research":
         topic = args or "latest AI trends 2026"
-        send_telegram(token, chat_id, f"Researching: {topic}...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, f"📚 Researching: {topic}")
+        reply = ask_llm(
             f"Do deep research on: {topic}\n"
             f"Include: key facts, current state, trends, key players, "
             f"opportunities, and actionable insights.\n"
             f"Be thorough and specific.",
-            system=RESEARCH_SYSTEM, max_tokens=2500)
+            system=RESEARCH_SYSTEM, max_tokens=2500, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/scrape":
@@ -309,103 +556,103 @@ def handle_command(token, chat_id, text):
         if not url or not url.startswith("http"):
             send_telegram(token, chat_id, "Provide a URL. Example: /scrape https://example.com")
         else:
-            send_telegram(token, chat_id, f"Reading {url}...")
+            send_telegram(token, chat_id, f"🌐 Reading {url}...")
             content = scrape_url(url)
-            reply = ask_groq(
+            reply = ask_llm(
                 f"Analyze this webpage and give key insights:\n\n{content}",
-                system=RESEARCH_SYSTEM, max_tokens=2000)
+                system=RESEARCH_SYSTEM, max_tokens=2000, chat_id=chat_id)
             send_telegram(token, chat_id, reply)
 
     # ===== BUSINESS COMMANDS =====
     elif cmd == "/ceo":
         q = args or "What should be our top priority?"
-        send_telegram(token, chat_id, "Thinking like a CEO...")
-        reply = ask_groq(f"CEO perspective: {q}\nGive: decision, rationale, risks, next steps.",
-            system=CEO_SYSTEM, max_tokens=2000)
+        send_telegram(token, chat_id, "💼 Thinking like a CEO...")
+        reply = ask_llm(f"CEO perspective: {q}\nGive: decision, rationale, risks, next steps.",
+            system=CEO_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/cto":
         q = args or "What is the ideal tech stack?"
-        send_telegram(token, chat_id, "Thinking like a CTO...")
-        reply = ask_groq(f"CTO perspective: {q}", system=CTO_SYSTEM, max_tokens=2000)
+        send_telegram(token, chat_id, "🖥 Thinking like a CTO...")
+        reply = ask_llm(f"CTO perspective: {q}", system=CTO_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/cfo":
         q = args or "How should we generate revenue?"
-        send_telegram(token, chat_id, "Thinking like a CFO...")
-        reply = ask_groq(f"CFO perspective: {q}", system=CFO_SYSTEM, max_tokens=2000)
+        send_telegram(token, chat_id, "💰 Thinking like a CFO...")
+        reply = ask_llm(f"CFO perspective: {q}", system=CFO_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/cmo":
         q = args or "How do we grow to 100k users?"
-        send_telegram(token, chat_id, "Thinking like a CMO...")
-        reply = ask_groq(f"CMO perspective: {q}", system=CMO_SYSTEM, max_tokens=2000)
+        send_telegram(token, chat_id, "📈 Thinking like a CMO...")
+        reply = ask_llm(f"CMO perspective: {q}", system=CMO_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     # ===== CONTENT COMMANDS =====
     elif cmd == "/caption":
-        send_telegram(token, chat_id, "Writing captions...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "✍️ Writing captions...")
+        reply = ask_llm(
             f"5 viral captions for: {args or 'entertainment'}\n"
             "1.TikTok 2.Instagram 3.Facebook 4.Twitter 5.WhatsApp + hashtags",
-            system=CONTENT_SYSTEM, max_tokens=1500)
+            system=CONTENT_SYSTEM, max_tokens=1500, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/blog":
-        send_telegram(token, chat_id, "Writing blog post...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "📝 Writing blog post...")
+        reply = ask_llm(
             f"Full SEO blog post: {args or 'entertainment trends 2026'}\n"
             "Include: headline, hook, 3 sections, conclusion with CTA.",
-            system=CONTENT_SYSTEM, max_tokens=2500)
+            system=CONTENT_SYSTEM, max_tokens=2500, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/script":
-        send_telegram(token, chat_id, "Writing script...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "🎬 Writing script...")
+        reply = ask_llm(
             f"Viral TikTok/YouTube script: {args or 'entertainment'}\n"
             "Include: hook, content, CTA. Format: [SCENE] dialogue.",
-            system=CONTENT_SYSTEM, max_tokens=2000)
+            system=CONTENT_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     # ===== TOOLS =====
     elif cmd == "/analyze":
-        send_telegram(token, chat_id, "Analyzing...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "📊 Analyzing...")
+        reply = ask_llm(
             f"Deep analysis of: {args or 'current project'}\n"
             "Cover: strengths, weaknesses, opportunities, threats, recommendations.",
-            system=GENERAL_SYSTEM, max_tokens=2000)
+            system=GENERAL_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/idea":
-        reply = ask_groq(
+        reply = ask_llm(
             "One brilliant feature idea.\nInclude: what it is, why users love it, how to build it, growth impact.",
-            system=GENERAL_SYSTEM, max_tokens=1500)
+            system=GENERAL_SYSTEM, max_tokens=1500, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/brainstorm":
-        send_telegram(token, chat_id, "Brainstorming...")
-        reply = ask_groq(
+        send_telegram(token, chat_id, "🧠 Brainstorming...")
+        reply = ask_llm(
             f"10 creative ideas for: {args or 'growth'}\n"
             "Mix bold, practical, innovative. Rate each 1-10.",
-            system=GENERAL_SYSTEM, max_tokens=2000)
+            system=GENERAL_SYSTEM, max_tokens=2000, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
 
     elif cmd == "/status":
-        send_telegram(token, chat_id, "Checking apps...")
+        send_telegram(token, chat_id, "📡 Checking apps...")
         apps = [
-            ("ZamVibe", "https://zamvibe-app.web.app"),
+            ("ZamVibe", "https://zamvibe.vercel.app"),
             ("OpenClaw Bot", "https://openclaw-bot-phi.vercel.app"),
         ]
-        report = "<b>App Status:</b>\n\n"
+        report = "📡 <b>App Status:</b>\n\n"
         for name, url in apps:
             code, ms = check_site_status(url)
-            emoji = "UP" if code == 200 else "DOWN"
-            report += f"{emoji}  <b>{name}</b> - HTTP {code} ({ms}ms)\n"
-        send_telegram(token, chat_id, report)
+            status = "✅ UP" if code == 200 else "❌ DOWN"
+            report += f"{status}  <b>{name}</b> - HTTP {code} ({ms}ms)\n"
+        send_telegram(token, chat_id, report, parse_mode="HTML")
 
     # ===== UNKNOWN COMMAND =====
     else:
-        send_telegram(token, chat_id, f"Unknown command: {cmd}\nType /help to see all commands.")
+        send_telegram(token, chat_id, f"❓ Unknown command: {cmd}\nType /help to see all commands.")
 
 
 # ============================================================
@@ -420,7 +667,7 @@ CODE_KEYWORDS = [
     "dashboard", "hello world", "component", "endpoint", "algorithm",
     "page", "form", "button", "navbar", "layout", "design",
     "clone", "copy", "implement", "fix", "debug", "error",
-    "how to code", "teach me", "tutorial", "example"
+    "how to code", "teach me", "tutorial", "example", "deploy"
 ]
 
 
@@ -432,10 +679,10 @@ def is_code_request(text):
 def smart_reply(token, chat_id, text):
     """Handle non-command messages by detecting intent."""
     if is_code_request(text):
-        send_telegram(token, chat_id, "Detected coding request...")
-        reply = ask_groq(text, system=CODER_SYSTEM, max_tokens=4000)
+        send_telegram(token, chat_id, "⚡ Detected coding request...")
+        reply = ask_llm(text, system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
     else:
-        reply = ask_groq(text, system=GENERAL_SYSTEM, max_tokens=2000)
+        reply = ask_llm(text, system=GENERAL_SYSTEM, max_tokens=2000, chat_id=chat_id)
     send_telegram(token, chat_id, reply)
 
 
@@ -484,7 +731,26 @@ class handler(BaseHTTPRequestHandler):
 
         # Handle voice messages
         elif "voice" in msg:
-            send_telegram(token, chat_id, "Voice notes not supported yet. Type your message or use /help for commands.")
+            send_telegram(token, chat_id, "🎤 Voice notes not supported yet. Type your message or use /help for commands.")
+
+        # Handle documents (code files)
+        elif "document" in msg:
+            doc = msg["document"]
+            file_url = get_file_url(token, doc["file_id"])
+            caption = msg.get("caption", "Analyze this file.")
+            if file_url:
+                try:
+                    r = requests.get(file_url, timeout=15)
+                    if r.status_code == 200 and len(r.content) < 50000:
+                        file_content = r.text[:10000]
+                        reply = ask_llm(f"{caption}\n\nFile content:\n{file_content}", chat_id=chat_id)
+                    else:
+                        reply = "File too large or couldn't read it."
+                except:
+                    reply = "Couldn't download the file."
+            else:
+                reply = "Couldn't access the file."
+            send_telegram(token, chat_id, reply)
 
         # Handle text messages
         elif "text" in msg:
@@ -501,4 +767,4 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"OpenClaw Bot v3 is running!")
+        self.wfile.write(b"OpenClaw Bot v4 is running! 🤖")
