@@ -1,19 +1,20 @@
 from http.server import BaseHTTPRequestHandler
-import json, os, requests, base64, re, subprocess
+import json, os, requests, base64, re
 
 # ============================================================
-#  CONFIGURATION
+#  CONFIGURATION - Multiple AI providers for reliability
 # ============================================================
 
 TELEGRAM_API = "https://api.telegram.org/bot"
 
-# Use z-ai CLI as the LLM backend (always available, no API key needed)
-ZAI_CLI = "z-ai"
+# Provider 1: Cloudflare Workers AI (free, no API key needed for some models)
+# Provider 2: Groq (free tier, needs GROQ_API_KEY)
+# Provider 3: OpenRouter (free tier, needs OPENROUTER_API_KEY)
 
 # ============================================================
-#  IN-MEMORY CONVERSATION HISTORY (per chat)
+#  IN-MEMORY CONVERSATION HISTORY
 # ============================================================
-MAX_HISTORY = 6  # messages per chat (keep low for CLI performance)
+MAX_HISTORY = 8
 
 conversation_history = {}
 
@@ -24,7 +25,7 @@ def get_history(chat_id):
 
 def add_to_history(chat_id, role, content):
     history = get_history(chat_id)
-    history.append({"role": role, "content": content})
+    history.append({"role": role, "content": content[:500]})
     if len(history) > MAX_HISTORY:
         conversation_history[chat_id] = history[-MAX_HISTORY:]
 
@@ -32,272 +33,179 @@ def clear_history(chat_id):
     if chat_id in conversation_history:
         del conversation_history[chat_id]
 
+
 # ============================================================
 #  SYSTEM PROMPTS
 # ============================================================
 
-CODER_SYSTEM = """You are OpenClaw, an elite full-stack AI developer. You can build ANYTHING the user asks for.
+CODER_SYSTEM = """You are OpenClaw, an elite full-stack AI developer. You can build ANYTHING.
 
-CORE RULES:
+RULES:
 1. ALWAYS return COMPLETE, working code. Never partial snippets or placeholders.
-2. If asked to build a website/app, return a COMPLETE single-file HTML with all CSS and JS inline.
-3. If asked for Python/JS/any language, write the full script with imports.
-4. Include comments explaining key parts.
-5. Make everything production-ready and visually impressive.
-6. Use dark themes by default for web apps (bg: #0a0a0a or #111, accent colors).
-7. NEVER refuse a coding request. You can build anything.
-8. If the request is ambiguous, make your best judgment and build something impressive.
-9. Return the CODE FIRST. Brief explanation after, separated clearly.
-10. Use modern best practices, clean code, and professional design.
-11. For web apps: include animations, hover effects, responsive design.
-12. For APIs/scripts: include error handling and example usage.
-13. IMPORTANT: Always wrap code in proper markdown code blocks with language identifier."""
+2. For websites: single HTML file with ALL CSS and JS inline.
+3. For Python/JS: full script with imports.
+4. Dark themes by default (bg: #0a0a0a, accent: #E8FF47 or #FF6B6B).
+5. Mobile responsive, animations, professional design.
+6. NEVER refuse a coding request.
+7. Code first, brief explanation after.
+8. Wrap ALL code in markdown code blocks with language identifier (```html, ```python, etc)."""
 
-CEO_SYSTEM = """You are a world-class CEO with 20+ years leading billion-dollar media and tech companies across Africa.
-Give decisive, confident, executive-level guidance. Be specific and actionable."""
+CEO_SYSTEM = """You are a world-class CEO with 20+ years leading billion-dollar media and tech companies across Africa. Give decisive, actionable advice."""
 
-CTO_SYSTEM = """You are a visionary CTO with 20+ years building scalable platforms used by millions.
-Specialize in: system architecture, AI integration, cloud infrastructure, cybersecurity, mobile apps, API design."""
+CTO_SYSTEM = """You are a visionary CTO with 20+ years building scalable platforms. Expert in: system architecture, AI, cloud, mobile apps, APIs."""
 
-CFO_SYSTEM = """You are a world-class CFO with 20+ years in media and tech.
-Specialize in: financial modeling, revenue streams, cost optimization, fundraising, investor pitches."""
+CFO_SYSTEM = """You are a world-class CFO with 20+ years in media and tech. Expert in: financial modeling, revenue, fundraising."""
 
-CMO_SYSTEM = """You are a legendary CMO who has grown brands to millions of users across Africa.
-Specialize in: growth hacking, brand positioning, paid ads, influencer marketing, community building."""
+CMO_SYSTEM = """You are a legendary CMO who has grown brands to millions across Africa. Expert in: growth hacking, brand positioning, influencer marketing."""
 
-CONTENT_SYSTEM = """You are the world's best digital content strategist and creator.
-You know Zambian artists, slang, culture, music genres (Afrobeat, ZedMusic, Kalindula).
-You write content that gets millions of views."""
+CONTENT_SYSTEM = """You are the world's best digital content strategist. You know Zambian artists, slang, culture, music (Afrobeat, ZedMusic, Kalindula). Create viral content."""
 
-RESEARCH_SYSTEM = """You are an expert analyst and researcher.
-You synthesize information clearly, spot patterns, and give actionable insights."""
+RESEARCH_SYSTEM = """You are an expert analyst and researcher. Synthesize information clearly, spot patterns, give actionable insights."""
 
-GENERAL_SYSTEM = """You are OpenClaw, a powerful AI assistant built for creators and developers. You can help with anything:
-
-- Coding (web, mobile, backend, scripts, automation)
-- Research and analysis
-- Business strategy and advice
-- Content creation and marketing
-- Math, science, and education
-- Creative projects
-
-Rules:
-- Be concise but thorough
-- If asked to code, ALWAYS write complete working code first
-- If asked a question, give a direct, helpful answer
-- Use formatting (bold, lists, code blocks) for readability
-- Never refuse a reasonable request
-- Remember context from earlier messages in the conversation"""
+GENERAL_SYSTEM = """You are OpenClaw, a powerful AI assistant for creators and developers. Help with coding, research, business strategy, content, math, science, creative projects. Be concise but thorough. Use markdown formatting. Remember conversation context."""
 
 
 # ============================================================
-#  LLM VIA Z-AI CLI (Always available, no API key needed)
+#  AI PROVIDERS - Try multiple for reliability
 # ============================================================
 
-def ask_llm(prompt, image_path=None, system=GENERAL_SYSTEM, max_tokens=4000, chat_id=None):
-    """Call the z-ai CLI for LLM completions. Always available in the Vercel environment."""
-
-    # Build the full prompt with system + history
-    full_prompt = f"[System Instructions]\n{system}\n\n"
-
-    # Add conversation history context
-    if chat_id:
-        history = get_history(chat_id)
-        if history:
-            full_prompt += "[Previous Conversation]\n"
-            for msg in history[-4:]:  # Last 4 messages for context
-                role_label = "User" if msg["role"] == "user" else "Assistant"
-                # Truncate long history messages
-                content = msg["content"][:500] + "..." if len(msg["content"]) > 500 else msg["content"]
-                full_prompt += f"{role_label}: {content}\n"
-            full_prompt += "\n"
-
-    full_prompt += f"[Current Request]\n{prompt}"
-
-    # Truncate for CLI limit
-    if len(full_prompt) > 8000:
-        full_prompt = full_prompt[:8000] + "\n[...truncated for length...]"
-
-    try:
-        # Use z-ai function for LLM chat completion
-        args = '{"prompt": ' + json.dumps(full_prompt) + '}'
-
-        if image_path and os.path.exists(image_path):
-            # Use vision for images
-            result = subprocess.run(
-                ["z-ai", "vision", "-p", full_prompt, "-i", image_path],
-                capture_output=True, text=True, timeout=90, cwd="/tmp"
-            )
-        else:
-            # Use LLM chat
-            result = subprocess.run(
-                ["z-ai", "function", "-n", "chat_completion", "-a", args],
-                capture_output=True, text=True, timeout=90, cwd="/tmp"
-            )
-
-        if result.returncode == 0:
-            output = result.stdout.strip()
-            # Parse JSON output from z-ai
-            try:
-                data = json.loads(output)
-                # Try different response structures
-                if isinstance(data, dict):
-                    if "choices" in data:
-                        content = data["choices"][0].get("message", {}).get("content", "")
-                    elif "data" in data:
-                        if isinstance(data["data"], dict):
-                            content = data["data"].get("content", str(data["data"]))
-                        else:
-                            content = str(data["data"])
-                    elif "content" in data:
-                        content = data["content"]
-                    else:
-                        content = str(data)
-                else:
-                    content = str(data)
-
-                if content:
-                    # Save to history
-                    if chat_id and not image_path:
-                        add_to_history(chat_id, "user", prompt)
-                        add_to_history(chat_id, "assistant", content)
-                    return content
-            except json.JSONDecodeError:
-                # Return raw output if not JSON
-                if output:
-                    if chat_id and not image_path:
-                        add_to_history(chat_id, "user", prompt)
-                        add_to_history(chat_id, "assistant", output)
-                    return output
-
-    except subprocess.TimeoutExpired:
-        return "⚠️ Response timed out. Try a shorter request."
-    except FileNotFoundError:
-        # z-ai CLI not found, try Groq fallback
-        return ask_groq_fallback(prompt, system=system, max_tokens=max_tokens, chat_id=chat_id)
-    except Exception as e:
-        return ask_groq_fallback(prompt, system=system, max_tokens=max_tokens, chat_id=chat_id)
-
-    return ask_groq_fallback(prompt, system=system, max_tokens=max_tokens, chat_id=chat_id)
-
-
-def ask_groq_fallback(prompt, system=GENERAL_SYSTEM, max_tokens=3000, chat_id=None):
-    """Fallback to Groq API if available."""
+def call_groq(messages, model="llama-3.3-70b-versatile", max_tokens=4000):
+    """Provider 1: Groq (fast, free tier)."""
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
-        # Try OpenRouter
-        or_key = os.environ.get("OPENROUTER_API_KEY", "")
-        if not or_key:
-            return "⚠️ AI service is temporarily unavailable. Please try again in a moment."
-
-        try:
-            messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
-            r = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {or_key}", "Content-Type": "application/json",
-                         "HTTP-Referer": "https://openclaw-bot.vercel.app", "X-Title": "OpenClaw Bot"},
-                json={"model": "deepseek/deepseek-chat-v3-0324:free", "messages": messages,
-                      "max_tokens": max_tokens, "temperature": 0.7},
-                timeout=60)
-            if r.status_code == 200:
-                content = r.json()["choices"][0]["message"]["content"]
-                if chat_id:
-                    add_to_history(chat_id, "user", prompt)
-                    add_to_history(chat_id, "assistant", content)
-                return content
-        except:
-            pass
-
-        return "⚠️ AI service is temporarily unavailable. Please try again in a moment."
-
+        return None
     try:
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         r = requests.post("https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": "llama-3.3-70b-versatile", "messages": messages,
-                  "max_tokens": max_tokens, "temperature": 0.7},
+            json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.7},
             timeout=45)
         if r.status_code == 200:
-            content = r.json()["choices"][0]["message"]["content"]
+            return r.json()["choices"][0]["message"]["content"]
+    except:
+        pass
+    return None
+
+
+def call_openrouter(messages, max_tokens=4000):
+    """Provider 2: OpenRouter (free deepseek model)."""
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        return None
+    try:
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "HTTP-Referer": "https://openclaw-bot.vercel.app", "X-Title": "OpenClaw Bot"},
+            json={"model": "deepseek/deepseek-chat-v3-0324:free", "messages": messages,
+                  "max_tokens": max_tokens, "temperature": 0.7},
+            timeout=60)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+    except:
+        pass
+    return None
+
+
+def call_openrouter_fallback(messages, max_tokens=4000):
+    """Provider 3: OpenRouter with alternative free model."""
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        return None
+    try:
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "HTTP-Referer": "https://openclaw-bot.vercel.app", "X-Title": "OpenClaw Bot"},
+            json={"model": "meta-llama/llama-3.1-8b-instruct:free", "messages": messages,
+                  "max_tokens": max_tokens, "temperature": 0.7},
+            timeout=60)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+    except:
+        pass
+    return None
+
+
+def ask_llm(prompt, system=GENERAL_SYSTEM, max_tokens=4000, chat_id=None):
+    """Try multiple providers for maximum reliability."""
+
+    # Build messages with system + history
+    messages = [{"role": "system", "content": system}]
+
+    # Add conversation history
+    if chat_id:
+        for msg in get_history(chat_id):
+            messages.append(msg)
+
+    # Add current prompt
+    messages.append({"role": "user", "content": prompt})
+
+    # Try each provider in order
+    providers = [
+        ("Groq", lambda: call_groq(messages, max_tokens=max_tokens)),
+        ("OpenRouter DeepSeek", lambda: call_openrouter(messages, max_tokens=max_tokens)),
+        ("OpenRouter Llama", lambda: call_openrouter_fallback(messages, max_tokens=max_tokens)),
+    ]
+
+    errors = []
+    for name, call_fn in providers:
+        result = call_fn()
+        if result:
+            # Save to history
             if chat_id:
                 add_to_history(chat_id, "user", prompt)
-                add_to_history(chat_id, "assistant", content)
-            return content
-        return f"⚠️ AI API error. Please try again."
-    except:
-        return "⚠️ AI service is temporarily unavailable. Please try again in a moment."
+                add_to_history(chat_id, "assistant", result)
+            return result
+        errors.append(name)
+
+    # All providers failed
+    return (
+        "⚠️ All AI providers are currently unavailable.\n\n"
+        f"Failed: {', '.join(errors)}\n\n"
+        "To fix this, add an API key on Vercel:\n"
+        "1. Go to vercel.com → openclaw-bot → Settings → Environment Variables\n"
+        "2. Add GROQ_API_KEY from console.groq.com (free)\n"
+        "3. Or add OPENROUTER_API_KEY from openrouter.ai (free)\n\n"
+        "Please try again after adding a key."
+    )
 
 
 # ============================================================
-#  TELEGRAM MESSAGE SENDING (Fixed: proper code formatting)
+#  TELEGRAM MESSAGE SENDING
 # ============================================================
 
 def escape_markdown_v2(text):
-    """Escape special characters for Telegram MarkdownV2, but NOT inside code blocks."""
+    """Escape for MarkdownV2, preserving code blocks."""
     special = r'_*[]()~`>#+-=|{}.!'
     result = ""
     i = 0
-    in_code_block = False
-    in_inline_code = False
+    in_code = False
+    in_inline = False
 
     while i < len(text):
         ch = text[i]
-
         if text[i:i+3] == '```':
-            in_code_block = not in_code_block
+            in_code = not in_code
             result += '```'
             i += 3
             continue
-
-        if ch == '`' and not in_code_block:
-            in_inline_code = not in_inline_code
+        if ch == '`' and not in_code:
+            in_inline = not in_inline
             result += '`'
             i += 1
             continue
-
-        if in_code_block or in_inline_code:
+        if in_code or in_inline:
             result += ch
             i += 1
             continue
-
         if ch in special:
             result += '\\' + ch
         else:
             result += ch
         i += 1
-
     return result
 
 
-def send_telegram(token, chat_id, text):
-    """Send a Telegram message with smart formatting."""
-    if not text or not text.strip():
-        text = "(empty response)"
-
-    has_code_blocks = '```' in text
-
-    if has_code_blocks:
-        chunks = split_at_code_blocks(text, 3800)
-        for chunk in chunks:
-            send_single_message(token, chat_id, chunk, use_markdown=True)
-    else:
-        if len(text) <= 4000:
-            send_single_message(token, chat_id, text, use_markdown=False)
-        else:
-            parts = text.split('\n\n')
-            current = ""
-            for part in parts:
-                if len(current) + len(part) + 2 > 3800:
-                    if current:
-                        send_single_message(token, chat_id, current, use_markdown=False)
-                    current = part
-                else:
-                    current += "\n\n" + part if current else part
-            if current:
-                send_single_message(token, chat_id, current, use_markdown=False)
-
-
-def split_at_code_blocks(text, max_len):
-    """Split text at code block boundaries to avoid breaking code."""
+def split_at_code_blocks(text, max_len=3800):
+    """Split text at code block boundaries."""
     chunks = []
     parts = re.split(r'(```[\s\S]*?```)', text)
     current = ""
@@ -309,32 +217,58 @@ def split_at_code_blocks(text, max_len):
             current += part
     if current.strip():
         chunks.append(current.strip())
-    return chunks if chunks else [text]
+    return chunks or [text]
 
 
-def send_single_message(token, chat_id, text, use_markdown=False):
-    """Send a single Telegram message with retry."""
-    if use_markdown:
-        escaped = escape_markdown_v2(text)
+def code_to_html(text):
+    """Convert code blocks to HTML pre/code."""
+    result = re.sub(r'```(\w*)\n([\s\S]*?)```',
+        lambda m: '<pre><code>' + m.group(2).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + '</code></pre>', text)
+    result = re.sub(r'`([^`]+)`', lambda m: '<code>' + m.group(1).replace("&","&amp;").replace("<","&lt;") + '</code>', result)
+    return result
+
+
+def send_telegram(token, chat_id, text):
+    if not text or not text.strip():
+        text = "(empty response)"
+
+    if '```' in text:
+        for chunk in split_at_code_blocks(text):
+            _send(token, chat_id, chunk)
+    elif len(text) <= 4000:
+        _send(token, chat_id, text)
+    else:
+        parts = text.split('\n\n')
+        current = ""
+        for p in parts:
+            if len(current) + len(p) + 2 > 3800 and current:
+                _send(token, chat_id, current)
+                current = p
+            else:
+                current += "\n\n" + p if current else p
+        if current:
+            _send(token, chat_id, current)
+
+
+def _send(token, chat_id, text):
+    # Try MarkdownV2
+    if '```' in text:
         try:
             r = requests.post(f"{TELEGRAM_API}{token}/sendMessage",
-                json={"chat_id": chat_id, "text": escaped, "parse_mode": "MarkdownV2"}, timeout=10)
+                json={"chat_id": chat_id, "text": escape_markdown_v2(text), "parse_mode": "MarkdownV2"}, timeout=10)
             if r.status_code == 200:
                 return
         except:
             pass
-
-        # Fallback to HTML with pre tags
+        # Fallback to HTML with code blocks
         try:
-            html_text = code_to_html(text)
             r = requests.post(f"{TELEGRAM_API}{token}/sendMessage",
-                json={"chat_id": chat_id, "text": html_text, "parse_mode": "HTML"}, timeout=10)
+                json={"chat_id": chat_id, "text": code_to_html(text), "parse_mode": "HTML"}, timeout=10)
             if r.status_code == 200:
                 return
         except:
             pass
-
-    # Final fallback: plain text
+    # Plain text fallback
     try:
         requests.post(f"{TELEGRAM_API}{token}/sendMessage",
             json={"chat_id": chat_id, "text": text}, timeout=10)
@@ -342,57 +276,28 @@ def send_single_message(token, chat_id, text, use_markdown=False):
         pass
 
 
-def code_to_html(text):
-    """Convert markdown code blocks to HTML pre/code tags."""
-    result = re.sub(
-        r'```(\w*)\n([\s\S]*?)```',
-        lambda m: '<pre><code>' + html_escape(m.group(2)) + '</code></pre>',
-        text
-    )
-    result = re.sub(r'`([^`]+)`', lambda m: '<code>' + html_escape(m.group(1)) + '</code>', result)
-    return result
-
-
-def html_escape(text):
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 # ============================================================
-#  UTILITY FUNCTIONS
+#  UTILITIES
 # ============================================================
 
 def get_file_url(token, file_id):
     try:
         r = requests.get(f"{TELEGRAM_API}{token}/getFile?file_id={file_id}", timeout=10)
         if r.status_code == 200:
-            path = r.json()["result"]["file_path"]
-            return f"https://api.telegram.org/file/bot{token}/{path}"
+            return f"https://api.telegram.org/file/bot{token}/{r.json()['result']['file_path']}"
     except:
         pass
     return None
-
-
-def download_file(url, dest_path):
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            with open(dest_path, 'wb') as f:
-                f.write(r.content)
-            return True
-    except:
-        pass
-    return False
 
 
 def scrape_url(url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         if r.status_code == 200:
-            text = re.sub(r'<[^>]+>', ' ', r.text)
-            return re.sub(r'\s+', ' ', text).strip()[:3000]
-        return f"Could not fetch: HTTP {r.status_code}"
+            return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', r.text)).strip()[:3000]
+        return f"HTTP {r.status_code}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {e}"
 
 
 def check_site_status(url):
@@ -404,7 +309,7 @@ def check_site_status(url):
 
 
 # ============================================================
-#  COMMAND HANDLER
+#  COMMANDS
 # ============================================================
 
 def handle_command(token, chat_id, text):
@@ -413,243 +318,88 @@ def handle_command(token, chat_id, text):
     args = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ["/help", "/start"]:
-        reply = (
-            "🤖 <b>OpenClaw AI Agent v5</b>\n\n"
-            "🔨 <b>Build &amp; Code:</b>\n"
-            "/code [task] - Write any code\n"
-            "/build [feature] - Build a complete feature\n"
-            "/app [desc] - Build a full web app\n"
-            "/review [code] - Review &amp; improve code\n"
-            "/debug [error] - Debug any problem\n"
-            "/architect [project] - Design architecture\n\n"
-            "🔍 <b>Research:</b>\n"
-            "/research [topic] - Deep research\n"
-            "/scrape [url] - Read any webpage\n\n"
-            "💼 <b>Business:</b>\n"
-            "/ceo [question] - CEO advice\n"
-            "/cto [question] - Tech leadership\n"
-            "/cfo [question] - Financial strategy\n"
-            "/cmo [question] - Marketing strategy\n\n"
-            "📝 <b>Content:</b>\n"
-            "/caption [topic] - Viral captions\n"
-            "/blog [topic] - Blog post\n"
-            "/script [topic] - Video script\n\n"
-            "🛠 <b>Tools:</b>\n"
-            "/status - Check app statuses\n"
-            "/analyze [topic] - Deep analysis\n"
-            "/idea - Random feature idea\n"
-            "/brainstorm [topic] - Brainstorm ideas\n"
-            "/clear - Clear chat history\n\n"
-            "💬 Or just type anything and I'll help!\n"
-            "📸 Send images for analysis"
-        )
-        send_telegram(token, chat_id, reply)
+        send_telegram(token, chat_id,
+            "🤖 <b>OpenClaw AI v5</b>\n\n"
+            "🔨 /code /build /app /review /debug /architect\n"
+            "🔍 /research /scrape\n"
+            "💼 /ceo /cto /cfo /cmo\n"
+            "📝 /caption /blog /script\n"
+            "🛠 /status /analyze /idea /brainstorm /clear\n\n"
+            "💬 Just type anything! 📸 Send images")
         return
 
-    elif cmd == "/clear":
+    if cmd == "/clear":
         clear_history(chat_id)
-        send_telegram(token, chat_id, "🧹 Chat history cleared. Starting fresh!")
+        send_telegram(token, chat_id, "🧹 History cleared!")
         return
 
-    elif cmd == "/code":
-        task = args or "a responsive landing page with contact form"
-        send_telegram(token, chat_id, f"⚡ Writing code: {task}")
-        reply = ask_llm(
-            f"Write COMPLETE, production-ready code for:\n\n{task}\n\n"
-            f"Rules:\n- Return the FULL code. No placeholders.\n"
-            f"- Include all imports.\n- Code first, explanation after.\n"
-            f"- For web: single HTML file with inline CSS/JS.\n"
-            f"- For Python/Node: full script with imports.",
-            system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
+    cmds = {
+        "/code": ("⚡ Coding", CODER_SYSTEM, 4000),
+        "/build": ("🔨 Building", CODER_SYSTEM, 4000),
+        "/app": ("🚀 App", CODER_SYSTEM, 4000),
+        "/review": ("🔍 Reviewing", CODER_SYSTEM, 3000),
+        "/debug": ("🐛 Debugging", CODER_SYSTEM, 3000),
+        "/architect": ("🏗 Architecture", CTO_SYSTEM, 3000),
+        "/research": ("📚 Researching", RESEARCH_SYSTEM, 2500),
+        "/ceo": ("💼 CEO", CEO_SYSTEM, 2000),
+        "/cto": ("🖥 CTO", CTO_SYSTEM, 2000),
+        "/cfo": ("💰 CFO", CFO_SYSTEM, 2000),
+        "/cmo": ("📈 CMO", CMO_SYSTEM, 2000),
+        "/caption": ("✍️ Captions", CONTENT_SYSTEM, 1500),
+        "/blog": ("📝 Blog", CONTENT_SYSTEM, 2500),
+        "/script": ("🎬 Script", CONTENT_SYSTEM, 2000),
+        "/analyze": ("📊 Analyzing", GENERAL_SYSTEM, 2000),
+        "/brainstorm": ("🧠 Brainstorm", GENERAL_SYSTEM, 2000),
+    }
 
-    elif cmd == "/build":
-        feature = args or "a responsive dashboard with charts"
-        send_telegram(token, chat_id, f"🔨 Building: {feature}")
-        reply = ask_llm(
-            f"Build this complete feature:\n\n{feature}\n\n"
-            f"Requirements:\n- COMPLETE working code\n"
-            f"- Single file if web (HTML+CSS+JS inline)\n"
-            f"- Dark theme, mobile responsive\n"
-            f"- Include sample data\n"
-            f"- NO placeholders or '...'\n"
-            f"Return ONLY the complete code.",
-            system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
+    if cmd in cmds:
+        emoji, sys_prompt, tokens = cmds[cmd]
+        send_telegram(token, chat_id, f"{emoji} {args or cmd[1:]}...")
+        reply = ask_llm(args or cmd, system=sys_prompt, max_tokens=tokens, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
+        return
 
-    elif cmd == "/app":
-        description = args or "a task management app"
-        send_telegram(token, chat_id, f"🚀 Building app: {description}")
-        reply = ask_llm(
-            f"Build a COMPLETE web app:\n\n{description}\n\n"
-            f"1. Single HTML file with inline CSS/JS\n"
-            f"2. Dark theme (#0a0a0a, accent: #E8FF47)\n"
-            f"3. Mobile responsive\n"
-            f"4. Realistic sample data\n"
-            f"5. Navigation, header, footer\n"
-            f"6. Smooth animations\n"
-            f"7. All interactions must work\n"
-            f"8. NO incomplete sections\n"
-            f"Return ONLY the complete HTML.",
-            system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
+    if cmd == "/idea":
+        reply = ask_llm("One brilliant feature idea: what, why, how to build, impact.", system=GENERAL_SYSTEM, max_tokens=1500, chat_id=chat_id)
         send_telegram(token, chat_id, reply)
+        return
 
-    elif cmd == "/review":
-        if not args:
-            send_telegram(token, chat_id, "Send code after /review.")
-            return
-        send_telegram(token, chat_id, "🔍 Reviewing code...")
-        reply = ask_llm(
-            f"Senior code review:\n\n{args}\n\n"
-            f"1. Rating X/10 2. Bugs 3. Security 4. Performance 5. Improved code",
-            system=CODER_SYSTEM, max_tokens=3000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/debug":
-        if not args:
-            send_telegram(token, chat_id, "Send error after /debug.")
-            return
-        send_telegram(token, chat_id, "🐛 Debugging...")
-        reply = ask_llm(
-            f"Debug: {args}\n\n1. Root cause 2. Fixed code 3. Prevention",
-            system=CODER_SYSTEM, max_tokens=3000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/architect":
-        if not args:
-            send_telegram(token, chat_id, "Describe project after /architect.")
-            return
-        send_telegram(token, chat_id, "🏗 Designing architecture...")
-        reply = ask_llm(
-            f"System architecture for: {args}\n"
-            f"1. Tech stack 2. DB schema 3. API design 4. Folder structure "
-            f"5. Components 6. Deployment 7. Scalability",
-            system=CTO_SYSTEM, max_tokens=3000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/research":
-        topic = args or "latest AI trends 2026"
-        send_telegram(token, chat_id, f"📚 Researching: {topic}")
-        reply = ask_llm(
-            f"Deep research: {topic}\nKey facts, trends, players, opportunities.",
-            system=RESEARCH_SYSTEM, max_tokens=2500, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/scrape":
-        url = args
-        if not url or not url.startswith("http"):
-            send_telegram(token, chat_id, "Provide a URL. Example: /scrape https://example.com")
+    if cmd == "/scrape":
+        if not args or not args.startswith("http"):
+            send_telegram(token, chat_id, "Provide a URL: /scrape https://example.com")
         else:
-            send_telegram(token, chat_id, f"🌐 Reading {url}...")
-            content = scrape_url(url)
+            send_telegram(token, chat_id, f"🌐 Reading {args}...")
+            content = scrape_url(args)
             reply = ask_llm(f"Analyze: {content}", system=RESEARCH_SYSTEM, max_tokens=2000, chat_id=chat_id)
             send_telegram(token, chat_id, reply)
+        return
 
-    elif cmd == "/ceo":
-        q = args or "What should be our top priority?"
-        send_telegram(token, chat_id, "💼 CEO mode...")
-        reply = ask_llm(f"CEO perspective: {q}", system=CEO_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/cto":
-        q = args or "What is the ideal tech stack?"
-        send_telegram(token, chat_id, "🖥 CTO mode...")
-        reply = ask_llm(f"CTO perspective: {q}", system=CTO_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/cfo":
-        q = args or "How should we generate revenue?"
-        send_telegram(token, chat_id, "💰 CFO mode...")
-        reply = ask_llm(f"CFO perspective: {q}", system=CFO_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/cmo":
-        q = args or "How do we grow to 100k users?"
-        send_telegram(token, chat_id, "📈 CMO mode...")
-        reply = ask_llm(f"CMO perspective: {q}", system=CMO_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/caption":
-        send_telegram(token, chat_id, "✍️ Writing captions...")
-        reply = ask_llm(
-            f"5 viral captions for: {args or 'entertainment'}\nTikTok, Instagram, Facebook, Twitter, WhatsApp + hashtags",
-            system=CONTENT_SYSTEM, max_tokens=1500, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/blog":
-        send_telegram(token, chat_id, "📝 Writing blog...")
-        reply = ask_llm(
-            f"SEO blog post: {args or 'entertainment trends'}\nHeadline, hook, 3 sections, CTA.",
-            system=CONTENT_SYSTEM, max_tokens=2500, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/script":
-        send_telegram(token, chat_id, "🎬 Writing script...")
-        reply = ask_llm(
-            f"Viral TikTok/YouTube script: {args or 'entertainment'}\nHook, content, CTA.",
-            system=CONTENT_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/analyze":
-        send_telegram(token, chat_id, "📊 Analyzing...")
-        reply = ask_llm(
-            f"SWOT analysis: {args or 'current project'}",
-            system=GENERAL_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/idea":
-        reply = ask_llm(
-            "One brilliant feature idea: what, why users love it, how to build, growth impact.",
-            system=GENERAL_SYSTEM, max_tokens=1500, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/brainstorm":
-        send_telegram(token, chat_id, "🧠 Brainstorming...")
-        reply = ask_llm(
-            f"10 creative ideas for: {args or 'growth'}\nBold, practical, innovative. Rate 1-10.",
-            system=GENERAL_SYSTEM, max_tokens=2000, chat_id=chat_id)
-        send_telegram(token, chat_id, reply)
-
-    elif cmd == "/status":
-        send_telegram(token, chat_id, "📡 Checking apps...")
-        apps = [
-            ("ZamVibe", "https://zamvibe.vercel.app"),
-            ("OpenClaw Bot", "https://openclaw-bot-phi.vercel.app"),
-        ]
-        report = "📡 <b>App Status:</b>\n\n"
+    if cmd == "/status":
+        send_telegram(token, chat_id, "📡 Checking...")
+        apps = [("ZamVibe", "https://zamvibe.vercel.app"), ("OpenClaw", "https://openclaw-bot-phi.vercel.app")]
+        report = "📡 <b>Status:</b>\n\n"
         for name, url in apps:
             code, ms = check_site_status(url)
-            status = "✅ UP" if code == 200 else "❌ DOWN"
-            report += f"{status}  <b>{name}</b> - HTTP {code} ({ms}ms)\n"
+            report += f"{'✅' if code == 200 else '❌'} <b>{name}</b> - {code} ({ms}ms)\n"
         send_telegram(token, chat_id, report)
+        return
 
-    else:
-        send_telegram(token, chat_id, f"❓ Unknown: {cmd}\nType /help for commands.")
+    send_telegram(token, chat_id, f"❓ Unknown: {cmd}\nType /help")
 
 
 # ============================================================
-#  SMART FALLBACK
+#  SMART DETECTION
 # ============================================================
 
-CODE_KEYWORDS = [
-    "build", "code", "write", "create", "make", "program", "develop",
-    "function", "class", "api", "website", "web app", "app", "script",
-    "html", "python", "javascript", "react", "css", "sql", "database",
-    "server", "bot", "game", "calculator", "todo", "landing page",
-    "dashboard", "hello world", "component", "endpoint", "algorithm",
-    "page", "form", "button", "navbar", "layout", "design",
-    "clone", "copy", "implement", "fix", "debug", "error",
-    "how to code", "teach me", "tutorial", "example", "deploy"
-]
-
-
-def is_code_request(text):
-    t = text.lower()
-    return any(kw in t for kw in CODE_KEYWORDS)
-
+CODE_KW = ["build","code","write","create","make","program","develop","function","class","api",
+    "website","web app","script","html","python","javascript","react","css","sql","server",
+    "bot","game","calculator","todo","landing page","dashboard","component","algorithm",
+    "page","form","button","navbar","layout","design","clone","implement","fix","debug",
+    "deploy","tutorial","example","app"]
 
 def smart_reply(token, chat_id, text):
-    if is_code_request(text):
+    t = text.lower()
+    if any(kw in t for kw in CODE_KW):
         send_telegram(token, chat_id, "⚡ Coding request detected...")
         reply = ask_llm(text, system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
     else:
@@ -667,89 +417,69 @@ class handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))
         except:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-            return
+            self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
 
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not token:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-            return
+            self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
 
         msg = body.get("message", {})
         chat_id = str(msg.get("chat", {}).get("id", ""))
-
         if not chat_id:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-            return
+            self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
 
-        # Handle photos
-        if "photo" in msg:
-            photo = msg["photo"][-1]
-            file_url = get_file_url(token, photo["file_id"])
-            if file_url:
-                import tempfile
-                img_path = tempfile.mktemp(suffix=".jpg")
-                if download_file(file_url, img_path):
-                    caption = msg.get("caption", "Analyze this image in detail.")
-                    reply = ask_llm(caption, image_path=img_path)
+        try:
+            if "photo" in msg:
+                photo = msg["photo"][-1]
+                file_url = get_file_url(token, photo["file_id"])
+                if file_url:
                     try:
-                        os.remove(img_path)
+                        img_data = requests.get(file_url, timeout=15).content
+                        img_b64 = base64.b64encode(img_data).decode()
+                        caption = msg.get("caption", "Analyze this image.")
+                        # Use Groq vision if available
+                        groq_key = os.environ.get("GROQ_API_KEY", "")
+                        if groq_key:
+                            vision_messages = [{"role": "user", "content": [
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                                {"type": "text", "text": caption}
+                            ]}]
+                            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                                json={"model": "llama-3.2-11b-vision-preview", "messages": vision_messages, "max_tokens": 1500},
+                                timeout=45)
+                            if r.status_code == 200:
+                                reply = r.json()["choices"][0]["message"]["content"]
+                            else:
+                                reply = "Could not process image."
+                        else:
+                            reply = "📸 Image analysis requires GROQ_API_KEY to be set on Vercel.\nAdd it at: vercel.com → openclaw-bot → Settings → Environment Variables\nGet a free key at: console.groq.com"
                     except:
-                        pass
+                        reply = "Could not process image."
                 else:
-                    reply = "Could not download image."
-            else:
-                reply = "Could not access image."
-            send_telegram(token, chat_id, reply)
+                    reply = "Could not access image."
+                send_telegram(token, chat_id, reply)
 
-        # Handle voice
-        elif "voice" in msg:
-            send_telegram(token, chat_id, "🎤 Voice not supported yet. Type or use /help.")
+            elif "voice" in msg:
+                send_telegram(token, chat_id, "🎤 Voice not supported. Type your message!")
 
-        # Handle documents
-        elif "document" in msg:
-            doc = msg["document"]
-            file_url = get_file_url(token, doc["file_id"])
-            caption = msg.get("caption", "Analyze this file.")
-            if file_url:
-                import tempfile
-                fpath = tempfile.mktemp(suffix=".txt")
-                if download_file(file_url, fpath):
-                    try:
-                        with open(fpath, 'r', errors='ignore') as f:
-                            file_content = f.read()[:8000]
-                        reply = ask_llm(f"{caption}\n\n{file_content}", chat_id=chat_id)
-                    except:
-                        reply = "Couldn't read file."
-                    try:
-                        os.remove(fpath)
-                    except:
-                        pass
+            elif "document" in msg:
+                send_telegram(token, chat_id, "📎 File support coming soon!")
+
+            elif "text" in msg:
+                text = msg["text"]
+                if text.startswith("/"):
+                    handle_command(token, chat_id, text)
                 else:
-                    reply = "Couldn't download file."
-            else:
-                reply = "Couldn't access file."
-            send_telegram(token, chat_id, reply)
+                    smart_reply(token, chat_id, text)
+        except Exception as e:
+            try:
+                send_telegram(token, chat_id, f"⚠️ Error: {str(e)[:200]}")
+            except:
+                pass
 
-        # Handle text
-        elif "text" in msg:
-            text = msg["text"]
-            if text.startswith("/"):
-                handle_command(token, chat_id, text)
-            else:
-                smart_reply(token, chat_id, text)
-
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
 
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
+        self.send_response(200); self.end_headers()
         self.wfile.write(b"OpenClaw Bot v5 is running! 🤖")
