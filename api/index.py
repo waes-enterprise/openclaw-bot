@@ -1,15 +1,64 @@
 from http.server import BaseHTTPRequestHandler
-import json, os, requests, base64, re
+import json, os, requests, base64, re, hashlib, time
 
 # ============================================================
-#  CONFIGURATION - Multiple AI providers for reliability
+#  CONFIGURATION
 # ============================================================
 
 TELEGRAM_API = "https://api.telegram.org/bot"
+BOT_BASE_URL = os.environ.get("BOT_BASE_URL", "https://openclaw-bot-phi.vercel.app")
 
-# Provider 1: Cloudflare Workers AI (free, no API key needed for some models)
-# Provider 2: Groq (free tier, needs GROQ_API_KEY)
-# Provider 3: OpenRouter (free tier, needs OPENROUTER_API_KEY)
+# ============================================================
+#  IN-MEMORY PREVIEW STORAGE
+# ============================================================
+
+previews = {}  # {preview_id: {"html": "...", "created": timestamp}}
+
+def create_preview(html_content, description=""):
+    """Store HTML and return a preview ID + URL."""
+    preview_id = hashlib.sha256(f"{html_content}{time.time()}".encode()).hexdigest()[:12]
+    previews[preview_id] = {
+        "html": html_content,
+        "created": time.time(),
+        "description": description,
+    }
+    # Keep only last 50 previews
+    if len(previews) > 50:
+        oldest = sorted(previews.items(), key=lambda x: x[1]["created"])[0]
+        del previews[oldest[0]]
+    return preview_id
+
+def get_preview(preview_id):
+    """Retrieve stored HTML by preview ID."""
+    return previews.get(preview_id)
+
+
+def extract_html_from_reply(reply):
+    """Extract HTML code from LLM reply (handles code fences and raw HTML)."""
+    # Try to find ```html ... ``` code block first
+    code_match = re.search(r'```html\s*\n([\s\S]*?)```', reply, re.IGNORECASE)
+    if code_match:
+        return code_match.group(1).strip()
+
+    # Try ``` ... ``` (any language)
+    code_match = re.search(r'```\w*\s*\n([\s\S]*?)```', reply)
+    if code_match:
+        content = code_match.group(1).strip()
+        if content.lower().startswith('<!doctype') or content.lower().startswith('<html'):
+            return content
+
+    # Check if the entire reply is HTML
+    stripped = reply.strip()
+    if stripped.lower().startswith('<!doctype') or stripped.lower().startswith('<html'):
+        return stripped
+
+    # Check for <html> anywhere in the reply
+    html_match = re.search(r'(<!DOCTYPE[\s\S]*</html>)', reply, re.IGNORECASE)
+    if html_match:
+        return html_match.group(1).strip()
+
+    return None
+
 
 # ============================================================
 #  IN-MEMORY CONVERSATION HISTORY
@@ -50,6 +99,38 @@ RULES:
 7. Code first, brief explanation after.
 8. Wrap ALL code in markdown code blocks with language identifier (```html, ```python, etc)."""
 
+BUILD_SYSTEM = """You are OpenClaw, an elite web developer who builds stunning, production-ready single-page web applications.
+
+RULES:
+1. ALWAYS return a COMPLETE single HTML file with ALL CSS and JavaScript inline (embedded).
+2. No external files, no separate CSS/JS — everything in ONE self-contained HTML file.
+3. Use CDN links for: Tailwind CSS, Google Fonts (Inter or Poppins), Font Awesome icons.
+4. Dark theme by default: background #0a0a0a, cards #1a1a1a, accent colors like #E8FF47 or #FF6B6B.
+5. MUST be mobile responsive (mobile-first design).
+6. Include smooth CSS animations and hover effects.
+7. Include a professional navigation bar with the project name.
+8. Include a hero section, main content area, and footer.
+9. Add realistic sample/placeholder data so the app looks complete and polished.
+10. Use CSS Grid and Flexbox for layout.
+11. Add interactive JavaScript features (at least 2-3 interactive elements).
+12. NEVER use placeholder text like "Lorem ipsum" — use realistic content.
+13. NEVER refuse a request. Always deliver working code.
+14. Wrap the COMPLETE HTML in a single ```html code block. Nothing else before or after."""
+
+APP_SYSTEM = """You are OpenClaw, an elite app builder who creates complete, beautiful web applications from descriptions.
+
+RULES:
+1. Return ONE complete HTML file with embedded CSS and JavaScript.
+2. No external dependencies except CDN links (Tailwind, Google Fonts, Font Awesome).
+3. Dark premium theme: bg #0a0a0a, surfaces #161616, accent #E8FF47 or gradient accents.
+4. Mobile-first responsive design.
+5. Smooth animations, transitions, hover effects.
+6. Include: navbar, hero section, feature sections, testimonials (if relevant), CTA, footer.
+7. Add realistic placeholder data and images (use placeholder.co or unsplash source URLs).
+8. Interactive elements: tabs, accordions, modals, counters, etc.
+9. Google Fonts (Inter or Poppins) for typography.
+10. Wrap COMPLETE code in ```html block only."""
+
 CEO_SYSTEM = """You are a world-class CEO with 20+ years leading billion-dollar media and tech companies across Africa. Give decisive, actionable advice."""
 
 CTO_SYSTEM = """You are a visionary CTO with 20+ years building scalable platforms. Expert in: system architecture, AI, cloud, mobile apps, APIs."""
@@ -66,7 +147,7 @@ GENERAL_SYSTEM = """You are OpenClaw, a powerful AI assistant for creators and d
 
 
 # ============================================================
-#  AI PROVIDERS - Try multiple for reliability
+#  AI PROVIDERS
 # ============================================================
 
 def call_groq(messages, model="llama-3.3-70b-versatile", max_tokens=4000):
@@ -126,19 +207,12 @@ def call_openrouter_fallback(messages, max_tokens=4000):
 
 def ask_llm(prompt, system=GENERAL_SYSTEM, max_tokens=4000, chat_id=None):
     """Try multiple providers for maximum reliability."""
-
-    # Build messages with system + history
     messages = [{"role": "system", "content": system}]
-
-    # Add conversation history
     if chat_id:
         for msg in get_history(chat_id):
             messages.append(msg)
-
-    # Add current prompt
     messages.append({"role": "user", "content": prompt})
 
-    # Try each provider in order
     providers = [
         ("Groq", lambda: call_groq(messages, max_tokens=max_tokens)),
         ("OpenRouter DeepSeek", lambda: call_openrouter(messages, max_tokens=max_tokens)),
@@ -149,28 +223,85 @@ def ask_llm(prompt, system=GENERAL_SYSTEM, max_tokens=4000, chat_id=None):
     for name, call_fn in providers:
         result = call_fn()
         if result:
-            # Save to history
             if chat_id:
                 add_to_history(chat_id, "user", prompt)
                 add_to_history(chat_id, "assistant", result)
             return result
         errors.append(name)
 
-    # All providers failed
     return (
         "⚠️ All AI providers are currently unavailable.\n\n"
         f"Failed: {', '.join(errors)}\n\n"
-        "To fix this, add an API key on Vercel:\n"
-        "1. Go to vercel.com → openclaw-bot → Settings → Environment Variables\n"
-        "2. Add GROQ_API_KEY from console.groq.com (free)\n"
-        "3. Or add OPENROUTER_API_KEY from openrouter.ai (free)\n\n"
-        "Please try again after adding a key."
+        "Please try again in a moment."
     )
+
+
+# ============================================================
+#  BUILD & DEPLOY (generates preview links)
+# ============================================================
+
+def handle_build_command(token, chat_id, args, system_prompt, emoji_label, max_tokens=6000):
+    """Generate HTML, deploy preview, and return a live link."""
+    if not args or len(args.strip()) < 3:
+        send_telegram(token, chat_id,
+            f"{emoji_label}\n\n"
+            "Tell me what to build! Examples:\n"
+            "• /build a landing page for my artist 'Bnell'\n"
+            "• /build a music streaming app UI\n"
+            "• /build a portfolio website\n"
+            "• /app a restaurant menu page")
+        return
+
+    # Send building status
+    send_telegram(token, chat_id, f"{emoji_label} <b>{escape_html(args[:80])}</b>\n\n⏳ Generating your app... (~30s)")
+
+    # Generate the code
+    reply = ask_llm(args, system=system_prompt, max_tokens=max_tokens, chat_id=chat_id)
+
+    if not reply or "unavailable" in reply:
+        send_telegram(token, chat_id, "❌ Failed to generate. Try again!")
+        return
+
+    # Extract HTML from the reply
+    html = extract_html_from_reply(reply)
+
+    if not html or len(html) < 200:
+        # Send the raw reply as fallback
+        send_telegram(token, chat_id, reply)
+        return
+
+    # Store as preview
+    preview_id = create_preview(html, description=args[:100])
+    preview_url = f"{BOT_BASE_URL}/api/preview?id={preview_id}"
+
+    # Extract a brief description (any text after the code block)
+    description = ""
+    after_code = re.split(r'```\w*\s*\n[\s\S]*?```', reply)
+    if len(after_code) > 1:
+        description = after_code[-1].strip()
+
+    # Send the result with preview link
+    size_kb = round(len(html) / 1024, 1)
+    result_msg = (
+        f"✅ <b>Built successfully!</b>\n\n"
+        f"📦 Size: {size_kb} KB\n\n"
+        f"🔗 <b>Live Preview:</b>\n{preview_url}\n\n"
+    )
+    if description:
+        result_msg += f"💡 {description[:300]}\n\n"
+    result_msg += "👆 Tap to view in your browser!"
+
+    send_telegram(token, chat_id, result_msg)
 
 
 # ============================================================
 #  TELEGRAM MESSAGE SENDING
 # ============================================================
+
+def escape_html(text):
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def escape_markdown_v2(text):
     """Escape for MarkdownV2, preserving code blocks."""
@@ -268,6 +399,14 @@ def _send(token, chat_id, text):
                 return
         except:
             pass
+    # Try HTML parse mode for formatted messages
+    try:
+        r = requests.post(f"{TELEGRAM_API}{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+        if r.status_code == 200:
+            return
+    except:
+        pass
     # Plain text fallback
     try:
         requests.post(f"{TELEGRAM_API}{token}/sendMessage",
@@ -319,8 +458,11 @@ def handle_command(token, chat_id, text):
 
     if cmd in ["/help", "/start"]:
         send_telegram(token, chat_id,
-            "🤖 <b>OpenClaw AI v5</b>\n\n"
-            "🔨 /code /build /app /review /debug /architect\n"
+            "🤖 <b>OpenClaw AI v6</b>\n\n"
+            "🔨 /build — Build any web page (gets live preview link!)\n"
+            "🚀 /app — Build a complete web app (gets live preview link!)\n"
+            "⚡ /code — Generate any code\n"
+            "🔍 /review /debug /architect\n"
             "🔍 /research /scrape\n"
             "💼 /ceo /cto /cfo /cmo\n"
             "📝 /caption /blog /script\n"
@@ -333,10 +475,18 @@ def handle_command(token, chat_id, text):
         send_telegram(token, chat_id, "🧹 History cleared!")
         return
 
+    # BUILD & APP — generate preview links
+    if cmd == "/build":
+        handle_build_command(token, chat_id, args, BUILD_SYSTEM, "🔨 <b>Building:</b>", max_tokens=6000)
+        return
+
+    if cmd == "/app":
+        handle_build_command(token, chat_id, args, APP_SYSTEM, "🚀 <b>Building App:</b>", max_tokens=6000)
+        return
+
+    # Other commands — standard code reply
     cmds = {
         "/code": ("⚡ Coding", CODER_SYSTEM, 4000),
-        "/build": ("🔨 Building", CODER_SYSTEM, 4000),
-        "/app": ("🚀 App", CODER_SYSTEM, 4000),
         "/review": ("🔍 Reviewing", CODER_SYSTEM, 3000),
         "/debug": ("🐛 Debugging", CODER_SYSTEM, 3000),
         "/architect": ("🏗 Architecture", CTO_SYSTEM, 3000),
@@ -388,23 +538,31 @@ def handle_command(token, chat_id, text):
 
 
 # ============================================================
-#  SMART DETECTION
+#  SMART DETECTION (also generates preview links for build-like requests)
 # ============================================================
 
-CODE_KW = ["build","code","write","create","make","program","develop","function","class","api",
-    "website","web app","script","html","python","javascript","react","css","sql","server",
-    "bot","game","calculator","todo","landing page","dashboard","component","algorithm",
-    "page","form","button","navbar","layout","design","clone","implement","fix","debug",
+BUILD_KW = ["build","create a","make a","design a","landing page","website","web app",
+    "portfolio","clone of","copy of","replica of","similar to"]
+
+CODE_KW = ["code","write","program","develop","function","class","api",
+    "script","python","javascript","react","css","sql","server",
+    "bot","game","calculator","todo","dashboard","component","algorithm",
+    "page","form","button","navbar","layout","implement","fix","debug",
     "deploy","tutorial","example","app"]
 
 def smart_reply(token, chat_id, text):
     t = text.lower()
-    if any(kw in t for kw in CODE_KW):
+    # Build/webpage requests → preview link
+    if any(kw in t for kw in BUILD_KW):
+        handle_build_command(token, chat_id, text, BUILD_SYSTEM, "🔨 <b>Building:</b>", max_tokens=6000)
+    # Code requests → raw code
+    elif any(kw in t for kw in CODE_KW):
         send_telegram(token, chat_id, "⚡ Coding request detected...")
         reply = ask_llm(text, system=CODER_SYSTEM, max_tokens=4000, chat_id=chat_id)
+        send_telegram(token, chat_id, reply)
     else:
         reply = ask_llm(text, system=GENERAL_SYSTEM, max_tokens=2000, chat_id=chat_id)
-    send_telegram(token, chat_id, reply)
+        send_telegram(token, chat_id, reply)
 
 
 # ============================================================
@@ -437,7 +595,6 @@ class handler(BaseHTTPRequestHandler):
                         img_data = requests.get(file_url, timeout=15).content
                         img_b64 = base64.b64encode(img_data).decode()
                         caption = msg.get("caption", "Analyze this image.")
-                        # Use Groq vision if available
                         groq_key = os.environ.get("GROQ_API_KEY", "")
                         if groq_key:
                             vision_messages = [{"role": "user", "content": [
@@ -453,7 +610,7 @@ class handler(BaseHTTPRequestHandler):
                             else:
                                 reply = "Could not process image."
                         else:
-                            reply = "📸 Image analysis requires GROQ_API_KEY to be set on Vercel.\nAdd it at: vercel.com → openclaw-bot → Settings → Environment Variables\nGet a free key at: console.groq.com"
+                            reply = "📸 Image analysis requires GROQ_API_KEY."
                     except:
                         reply = "Could not process image."
                 else:
@@ -481,5 +638,43 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
 
     def do_GET(self):
+        # Preview endpoint — serves deployed HTML
+        if self.path.startswith("/api/preview"):
+            try:
+                from urllib.parse import urlparse, parse_qs
+                query = parse_qs(urlparse(self.path).query)
+                preview_id = query.get("id", [""])[0]
+
+                if not preview_id:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Missing ?id= parameter")
+                    return
+
+                preview = get_preview(preview_id)
+                if not preview:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(b"<html><body style='background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh'><div style='text-align:center'><h1>404</h1><p>Preview not found or expired</p><p style='color:#666'>Build something new with /build or /app</p></div></body></html>")
+                    return
+
+                html_content = preview["html"]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("X-Frame-Options", "ALLOWALL")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(html_content.encode("utf-8"))
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(f"Error: {str(e)}".encode())
+                return
+
+        # Health check
         self.send_response(200); self.end_headers()
-        self.wfile.write(b"OpenClaw Bot v5 is running!")
+        self.wfile.write(b"OpenClaw Bot v6 is running!")
